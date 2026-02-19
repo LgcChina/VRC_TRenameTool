@@ -1,0 +1,23 @@
+{
+  "name": "com.lgcchina.TRenameTool",
+  "displayName": "LGC_TRenameTool_模型菜单翻译",
+  "version": "1.0.0",
+  "unity": "2022.3",
+  "description": "用来翻译重命名基于物体，例如ma形式的菜单",
+  "author": {
+    "name": "LgcChina",
+    "url": "https://github.com/LgcChina"
+  },
+  "vpmDependencies": {
+  "com.vrchat.avatars": "3.x.x"
+  },
+  "keywords": [ "VRChat", "BlendShape", "菜单", "工具", "Unity" ],
+  "samples": [
+    {
+      "displayName": "示例场景与预设",
+      "description": "未包含示例场景与预设",
+      "path": "Samples~/QuickStart"
+    }
+  ]
+
+}
