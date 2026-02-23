@@ -11,7 +11,7 @@
   "vpmDependencies": {
   "com.vrchat.avatars": "3.x.x"
   },
-  "keywords": [ "VRChat", "BlendShape", "菜单", "工具", "Unity" ],
+  "keywords": [ "VRChat", "Menu", "菜单", "工具", "Unity" ,"Modular Avatar"],
   "samples": [
     {
       "displayName": "示例场景与预设",
