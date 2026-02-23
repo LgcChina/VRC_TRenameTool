@@ -1,9 +1,9 @@
 {
   "name": "com.lgcchina.t-rename-tool",
   "displayName": "LGC_TRenameTool_模型菜单翻译",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "unity": "2022.3",
-  "description": "用来翻译重命名基于物体，例如ma形式的菜单",
+  "description": "基于物体批量重命名实现手动翻译，通常用于MA形式的菜单",
   "author": {
     "name": "LgcChina",
     "url": "https://github.com/LgcChina"
