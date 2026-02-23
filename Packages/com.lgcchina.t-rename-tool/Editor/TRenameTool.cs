@@ -4,7 +4,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Text;
 using System.Linq;
-using System.Net;
 using System;
 using System.Text.RegularExpressions;
 #if UNITY_EDITOR
@@ -15,28 +14,18 @@ public class TRenameTool : EditorWindow
     private string nameList = "";
     private Vector2 scrollPos, objectListScroll;
     private bool showChildren = true;
-    private bool isTranslating = false;
     private string translationStatus = "";
-    private string sourceLanguage = "en"; // 源语言
-    private string targetLanguage = "zh-CHS"; // 目标语言
-    private bool isEnPairSelected = true; // 标记当前选择的语言对
-    private bool isJpPairSelected = false;
+    private string customSeparator = "###"; // 自定义分隔符
 
-    // 【核心方案】纯符号分隔符：###（三井号，无语义、不被翻译、低冲突）
-    private const string SpecialSeparator = "###";
-    // 提取时格式：名称 + ### + 空行（空行仅提升可读性，丢失不影响分割）
-    private const string ObjectSeparator = SpecialSeparator + "\n\n";
-    private const string SingleNewline = "\n";
-
-    [MenuItem("LGC/模型菜单翻译")]
+    [MenuItem("LGC/LGC_模型菜单翻译")]
     public static void ShowWindow()
     {
-        GetWindow<TRenameTool>("模型菜单翻译");
+        GetWindow<TRenameTool>("LGC_模型菜单翻译");
     }
 
     void OnGUI()
     {
-        // 计算四个区域的宽度比例
+        // 计算三个区域的宽度比例
         float leftPanelWidth = position.width * 0.3f;
         float centerPanelWidth = position.width * 0.49f;
         float rightPanelWidth = position.width * 0.2f;
@@ -62,11 +51,11 @@ public class TRenameTool : EditorWindow
             EditorGUILayout.LabelField("物体输入", EditorStyles.boldLabel);
             GUILayout.BeginVertical("box");
             {
-                // 提示文字强调“符号不被翻译”（无格式示例）
+                // 提示文字强调"符号不被翻译"（无格式示例）
                 Rect dragArea = GUILayoutUtility.GetRect(0, 70, GUILayout.ExpandWidth(true));
                 GUI.Box(dragArea,
                     "拖拽根物体到这里（自动提取名称）\n" +
-                    $"提取后名称间用 {SpecialSeparator} 分隔\n" +
+                    $"提取后名称间用 {customSeparator} 分隔\n" +
                     "此符号为纯标记，不会被翻译软件处理",
                     EditorStyles.helpBox
                 );
@@ -144,49 +133,30 @@ public class TRenameTool : EditorWindow
             // 名称编辑区域
             EditorGUILayout.LabelField("名称编辑区", EditorStyles.boldLabel);
 
-            // 语言选择和翻译方向切换（逻辑不变）
+            // 自定义分隔符输入
             GUILayout.BeginVertical("box");
             {
-                GUILayout.BeginHorizontal(GUILayout.Height(35));
+                GUILayout.BeginHorizontal();
                 {
-                    GUILayout.Space(5);
-                    Color originalColor = GUI.backgroundColor;
-                    GUI.backgroundColor = isEnPairSelected ? new Color(0.5f, 0.8f, 0.5f) : Color.white;
-                    if (GUILayout.Button(GetEnButtonText(), GUILayout.ExpandWidth(true), GUILayout.Height(30)))
+                    GUILayout.Label("自定义分隔符:", GUILayout.Width(100));
+                    string newSeparator = EditorGUILayout.TextField(customSeparator, GUILayout.ExpandWidth(true));
+                    if (newSeparator != customSeparator && !string.IsNullOrEmpty(newSeparator))
                     {
-                        SetLanguagePair("en", "zh-CHS");
-                        isEnPairSelected = true;
-                        isJpPairSelected = false;
+                        customSeparator = newSeparator;
                     }
-                    GUILayout.Space(5);
-                    GUI.backgroundColor = Color.white;
-                    if (GUILayout.Button("反转", GUILayout.Width(70), GUILayout.Height(30)))
-                    {
-                        ReverseTranslationDirection();
-                    }
-                    GUILayout.Space(5);
-                    GUI.backgroundColor = isJpPairSelected ? new Color(0.5f, 0.8f, 0.5f) : Color.white;
-                    if (GUILayout.Button(GetJpButtonText(), GUILayout.ExpandWidth(true), GUILayout.Height(30)))
-                    {
-                        SetLanguagePair("ja", "zh-CHS");
-                        isEnPairSelected = false;
-                        isJpPairSelected = true;
-                    }
-                    GUI.backgroundColor = originalColor;
-                    GUILayout.Space(5);
                 }
                 GUILayout.EndHorizontal();
-                GUILayout.Space(3);
             }
             GUILayout.EndVertical();
             GUILayout.Space(10);
 
             // 【关键提示】移除提取后格式示例，仅保留核心说明
             EditorGUILayout.HelpBox(
-                $"1. 分隔符 {SpecialSeparator} 是纯符号，翻译软件不会翻译或删除\n" +
-                $"2. 翻译后即使无空行（如：服装{SpecialSeparator}靴子{SpecialSeparator}袜子（仅限电脑）），仍能正确分割\n" +
-                $"3. 若 {SpecialSeparator} 意外丢失，可手动补加，或按空行分隔（兼容降级）",
-                MessageType.Info
+                $"1. 分隔符 {customSeparator} 建议是纯符号，翻译软件不要翻译或删除才行\n" +
+                $"2. 翻译后即使无空行（如：服装{customSeparator}靴子{customSeparator}袜子（仅限电脑）），仍能正确分割\n" +
+                $"3. 若 {customSeparator} 意外丢失，可手动补加，或按空行分隔（兼容降级）\n\n" +
+                "注意：翻译接口不再提供服务，可手动复制提取的文本到外站翻译回来",
+                MessageType.Warning
             );
 
             // 名称列表编辑区（逻辑不变）
@@ -204,14 +174,14 @@ public class TRenameTool : EditorWindow
                     translationStatus.Contains("失败") || translationStatus.Contains("错误") ? MessageType.Error : MessageType.Info);
             }
 
-            // 名称数量匹配状态（精准识别###分割）
+            // 名称数量匹配状态（精准识别分隔符分割）
             if (allObjects.Count > 0)
             {
                 int nameCount = CountNamesInList();
                 string status = nameCount == allObjects.Count
                     ? $"<color=green>名称数量匹配: {nameCount}/{allObjects.Count}</color>"
                     : $"<color=red>名称数量不匹配: {nameCount}/{allObjects.Count}</color>\n" +
-                      $"<color=red>请检查 {SpecialSeparator} 是否完整保留</color>";
+                      $"<color=red>请检查 {customSeparator} 是否完整保留</color>";
                 EditorGUILayout.LabelField(status, new GUIStyle(EditorStyles.label)
                 {
                     richText = true,
@@ -251,17 +221,8 @@ public class TRenameTool : EditorWindow
                 }
                 GUILayout.Space(15);
 
-                // 翻译按钮（逻辑不变）
-                GUI.enabled = !isTranslating && !string.IsNullOrEmpty(nameList);
-                if (GUILayout.Button("翻译", GUILayout.Height(50)))
-                {
-                    StartTranslation();
-                }
-                GUI.enabled = true;
-                GUILayout.Space(15);
-
-                // 应用按钮（逻辑不变，依赖###分割）
-                GUI.enabled = allObjects.Count > 0 && !isTranslating;
+                // 应用按钮（逻辑不变，依赖分隔符分割）
+                GUI.enabled = allObjects.Count > 0;
                 if (GUILayout.Button("应用", GUILayout.Height(50)))
                 {
                     ApplyRenaming();
@@ -284,8 +245,8 @@ public class TRenameTool : EditorWindow
         GUILayout.EndVertical();
     }
 
-    // ------------------------------ 核心逻辑：###符号分割 + 保留名称内换行 ------------------------------
-    #region 核心功能优化（纯符号方案 + 换行保留）
+    // ------------------------------ 核心逻辑：自定义分隔符分割 + 保留名称内换行 ------------------------------
+    #region 核心功能优化（自定义分隔符方案 + 换行保留）
     // 【优化1】提取名称：保留原始名称内的换行，仅添加分隔符
     void ExtractNames()
     {
@@ -299,14 +260,15 @@ public class TRenameTool : EditorWindow
         {
             // 直接保留原始名称（含内部换行）
             sb.Append(allObjects[i].name);
-            // 每个名称后添加###（最后一个名称不加，避免多余标记）
+            // 每个名称后添加分隔符（最后一个名称不加，避免多余标记）
             if (i < allObjects.Count - 1)
             {
-                sb.Append(ObjectSeparator);
+                sb.Append(customSeparator + "\n\n");
             }
         }
         nameList = sb.ToString();
-        translationStatus = $"已提取 {allObjects.Count} 个名称（分隔符：{SpecialSeparator}）";
+        translationStatus = $"已提取 {allObjects.Count} 个名称（分隔符：{customSeparator}）\n" +
+                           "提示：可手动复制文本到外部翻译网站翻译后粘贴回来";
     }
 
     // 【优化2】分割名称：保留名称内换行，仅清理分隔符残留的前后空行/空格
@@ -317,27 +279,27 @@ public class TRenameTool : EditorWindow
         // 步骤1：统一换行符（处理Windows/macOS差异，保留名称内换行）
         text = text.Replace("\r\n", "\n").Replace("\r", "\n");
 
-        // 步骤2：按###分割（纯符号匹配，不破坏名称内换行）
-        string[] specialSplitResult = Regex.Split(text, SpecialSeparator, RegexOptions.None)
+        // 步骤2：按自定义分隔符分割（纯符号匹配，不破坏名称内换行）
+        string[] specialSplitResult = Regex.Split(text, Regex.Escape(customSeparator), RegexOptions.None)
             .Select(part =>
             {
-                // 仅清理分割后残留的“前后空行/空格/制表符”，保留名称内部换行
+                // 仅清理分割后残留的"前后空行/空格/制表符"，保留名称内部换行
                 string cleanPart = part.Trim('\n', ' ', '\t');
-                // 仅清理“多余空格”（不处理换行），避免名称内空格重复
+                // 仅清理"多余空格"（不处理换行），避免名称内空格重复
                 cleanPart = Regex.Replace(cleanPart, @" +", " ");
                 return cleanPart;
             })
             .Where(part => !string.IsNullOrEmpty(part)) // 过滤空内容
             .ToArray();
 
-        // 情况1：###分割结果匹配物体数 → 精准返回（含名称内换行）
+        // 情况1：分隔符分割结果匹配物体数 → 精准返回（含名称内换行）
         if (specialSplitResult.Length == allObjects.Count)
         {
             return specialSplitResult;
         }
 
-        // 情况2：###失效（意外丢失），降级按空行分割（仍保留名称内换行）
-        translationStatus = $"警告：{SpecialSeparator} 标记不完整，尝试按空行分割";
+        // 情况2：分隔符失效（意外丢失），降级按空行分割（仍保留名称内换行）
+        translationStatus = $"警告：{customSeparator} 标记不完整，尝试按空行分割";
         string[] fallbackSplit = text.Split(new[] { "\n\n" }, StringSplitOptions.RemoveEmptyEntries)
             .Select(part =>
             {
@@ -349,7 +311,7 @@ public class TRenameTool : EditorWindow
         return fallbackSplit;
     }
 
-    // 【优化3】计数逻辑：依赖###分割结果，精准计数
+    // 【优化3】计数逻辑：依赖分隔符分割结果，精准计数
     int CountNamesInList()
     {
         if (string.IsNullOrEmpty(nameList)) return 0;
@@ -359,24 +321,6 @@ public class TRenameTool : EditorWindow
 
     // ------------------------------ 原有辅助功能（同步优化提示文本） ------------------------------
     #region 原有辅助功能
-    string GetEnButtonText()
-    {
-        if (sourceLanguage == "zh-CHS" && targetLanguage == "en")
-            return "中文 → 英语";
-        else if (sourceLanguage == "en" && targetLanguage == "zh-CHS")
-            return "英语 → 中文";
-        return "英语 → 中文";
-    }
-
-    string GetJpButtonText()
-    {
-        if (sourceLanguage == "zh-CHS" && targetLanguage == "ja")
-            return "中文 → 日语";
-        else if (sourceLanguage == "ja" && targetLanguage == "zh-CHS")
-            return "日语 → 中文";
-        return "日语 → 中文";
-    }
-
     void ShowTranslationWebsitesMenu()
     {
         GenericMenu menu = new GenericMenu();
@@ -405,30 +349,6 @@ public class TRenameTool : EditorWindow
         if (!string.IsNullOrEmpty(url)) Application.OpenURL(url);
     }
 
-    void SetLanguagePair(string source, string target)
-    {
-        sourceLanguage = source;
-        targetLanguage = target;
-        translationStatus = $"已设置为 {GetLanguageName(source)} → {GetLanguageName(target)}";
-    }
-
-    string GetLanguageName(string langCode)
-    {
-        switch (langCode)
-        {
-            case "en": return "英语";
-            case "ja": return "日语";
-            case "zh-CHS": return "中文";
-            default: return langCode;
-        }
-    }
-
-    void ReverseTranslationDirection()
-    {
-        (sourceLanguage, targetLanguage) = (targetLanguage, sourceLanguage);
-        translationStatus = $"已反转翻译方向: {GetLanguageName(sourceLanguage)} → {GetLanguageName(targetLanguage)}";
-    }
-
     void UpdateObjectList()
     {
         allObjects.Clear();
@@ -451,96 +371,7 @@ public class TRenameTool : EditorWindow
             allObjects.Clear();
             nameList = "";
             translationStatus = "已清除所有内容";
-            isEnPairSelected = true;
-            isJpPairSelected = false;
-            SetLanguagePair("en", "zh-CHS");
         }
-    }
-
-    void StartTranslation()
-    {
-        if (string.IsNullOrEmpty(nameList))
-        {
-            EditorUtility.DisplayDialog("错误", "没有可翻译的内容", "确定");
-            return;
-        }
-        translationStatus = "翻译中...";
-        isTranslating = true;
-        Repaint();
-
-        // 翻译前先提取有效名称（排除###标记，保留内换行）
-        string[] names = SplitNames(nameList);
-        if (names.Length == 0)
-        {
-            translationStatus = "没有可翻译的内容（请检查分隔符）";
-            isTranslating = false;
-            return;
-        }
-
-        EditorApplication.delayCall += () =>
-        {
-            try
-            {
-                string apiUrl = $"https://suapi.net/api/text/translate?from={sourceLanguage}&to={targetLanguage}";
-                foreach (var text in names)
-                    apiUrl += $"&text[]={Uri.EscapeDataString(text.Trim())}";
-
-                using (WebClient client = new WebClient())
-                {
-                    client.Encoding = Encoding.UTF8;
-                    client.Headers.Add("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36");
-                    string response = client.DownloadString(apiUrl);
-                    var jsonResponse = JsonUtility.FromJson<TranslationResponse>(response);
-
-                    if (jsonResponse.code == 200 && jsonResponse.data != null && jsonResponse.data.Length > 0)
-                    {
-                        StringBuilder translatedText = new StringBuilder();
-                        for (int i = 0; i < jsonResponse.data.Length; i++)
-                        {
-                            var translationData = jsonResponse.data[i];
-                            if (translationData.translations != null && translationData.translations.Length > 0)
-                            {
-                                // 保留翻译结果内的换行，仅添加分隔符
-                                string translatedName = translationData.translations[0].text.Trim();
-                                translatedText.Append(translatedName);
-                                if (i < jsonResponse.data.Length - 1)
-                                    translatedText.Append(ObjectSeparator);
-                            }
-                            else
-                            {
-                                translatedText.Append($"{translationData.detectedLanguage?.language}文本");
-                                if (i < jsonResponse.data.Length - 1)
-                                    translatedText.Append(ObjectSeparator);
-                            }
-                        }
-                        nameList = translatedText.ToString();
-                        translationStatus = $"翻译完成 ({names.Length}个名称)，已自动添加 {SpecialSeparator} 分隔符";
-                    }
-                    else
-                    {
-                        translationStatus = $"翻译失败: {jsonResponse.msg}";
-                        Debug.LogError($"翻译失败: {jsonResponse.msg}\nAPI响应: {response}");
-                    }
-                }
-            }
-            catch (WebException webEx)
-            {
-                translationStatus = webEx.Response is HttpWebResponse httpResponse
-                    ? $"网络错误: {httpResponse.StatusCode}"
-                    : $"网络错误: {webEx.Message}";
-                Debug.LogError($"网络错误: {webEx}");
-            }
-            catch (Exception ex)
-            {
-                translationStatus = $"翻译出错: {ex.Message}";
-                Debug.LogError($"翻译错误: {ex}");
-            }
-            finally
-            {
-                isTranslating = false;
-                Repaint();
-            }
-        };
     }
 
     // 【优化4】应用重命名：移除格式示例，保留名称内换行
@@ -558,7 +389,7 @@ public class TRenameTool : EditorWindow
             EditorUtility.DisplayDialog(
                 "数量不匹配",
                 $"输入的名称数({newNames.Length})与物体数({allObjects.Count})不匹配!\n\n" +
-                $"请确保名称间有 {SpecialSeparator} 分隔",
+                $"请确保名称间有 {customSeparator} 分隔",
                 "确定"
             );
             return;
@@ -574,18 +405,6 @@ public class TRenameTool : EditorWindow
         AssetDatabase.Refresh();
         translationStatus = $"已应用重命名 ({allObjects.Count}个物体)";
     }
-
-    // JSON解析类（无修改）
-    [System.Serializable]
-    private class DetectedLanguage { public string language; public float score; }
-    [System.Serializable]
-    private class Translation { public string text; public string to; public TranslationSentLen sentLen; }
-    [System.Serializable]
-    private class TranslationSentLen { public int[] srcSentLen; public int[] transSentLen; }
-    [System.Serializable]
-    private class TranslationData { public DetectedLanguage detectedLanguage; public Translation[] translations; }
-    [System.Serializable]
-    private class TranslationResponse { public int code; public string msg; public TranslationData[] data; public float exec_time; public string ip; }
     #endregion
 }
 #endif
