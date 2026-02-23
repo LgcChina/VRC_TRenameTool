@@ -17,10 +17,10 @@ public class TRenameTool : EditorWindow
     private string translationStatus = "";
     private string customSeparator = "###"; // 自定义分隔符
 
-    [MenuItem("LGC/LGC_模型菜单翻译")]
+    [MenuItem("LGC/LGC_模型MA菜单翻译")]
     public static void ShowWindow()
     {
-        GetWindow<TRenameTool>("LGC_模型菜单翻译");
+        GetWindow<TRenameTool>("LGC_模型MA菜单翻译");
     }
 
     void OnGUI()
@@ -130,7 +130,7 @@ public class TRenameTool : EditorWindow
         GUILayout.BeginVertical(GUILayout.Width(width), GUILayout.ExpandHeight(true));
         GUILayout.Space(5);
         {
-            // 名称编辑区域
+            // 名称编辑区
             EditorGUILayout.LabelField("名称编辑区", EditorStyles.boldLabel);
 
             // 自定义分隔符输入
@@ -154,8 +154,9 @@ public class TRenameTool : EditorWindow
             EditorGUILayout.HelpBox(
                 $"1. 分隔符 {customSeparator} 建议是纯符号，翻译软件不要翻译或删除才行\n" +
                 $"2. 翻译后即使无空行（如：服装{customSeparator}靴子{customSeparator}袜子（仅限电脑）），仍能正确分割\n" +
-                $"3. 若 {customSeparator} 意外丢失，可手动补加，或按空行分隔（兼容降级）\n\n" +
-                "注意：翻译接口不再提供服务，可手动复制提取的文本到外站翻译回来",
+                $"3. 若 {customSeparator} 意外丢失，可手动补加，或按空行分隔（兼容降级）\n" +
+                $"4. {customSeparator} 不会被应用到物体名称中\n\n" +
+                "注意：由于翻译接口不再提供服务，不过，依然可手动复制提取的文本到外站翻译回来应用",
                 MessageType.Warning
             );
 
@@ -247,7 +248,7 @@ public class TRenameTool : EditorWindow
 
     // ------------------------------ 核心逻辑：自定义分隔符分割 + 保留名称内换行 ------------------------------
     #region 核心功能优化（自定义分隔符方案 + 换行保留）
-    // 【优化1】提取名称：保留原始名称内的换行，仅添加分隔符
+    // 【优化1】提取名称：保留原始名称（含内部换行），仅添加分隔符
     void ExtractNames()
     {
         if (allObjects.Count == 0)
@@ -399,7 +400,9 @@ public class TRenameTool : EditorWindow
         for (int i = 0; i < allObjects.Count; i++)
         {
             // 直接应用含换行的名称（翻译结果有换行则保留，无则不添加）
-            allObjects[i].name = newNames[i];
+            // 移除分隔符确保不会被应用到物体名称中
+            string finalName = newNames[i].Replace(customSeparator, "").Trim();
+            allObjects[i].name = finalName;
         }
         Debug.Log($"成功重命名 {allObjects.Count} 个物体");
         AssetDatabase.Refresh();
