@@ -68,7 +68,7 @@ namespace LGC.TRenameTool.Editor
             titleContent = new GUIContent(ToolName + " " + Version);
             EditorApplication.playModeStateChanged -= HandlePlayModeStateChanged;
             EditorApplication.playModeStateChanged += HandlePlayModeStateChanged;
-            if (SessionState.GetBool(PlayModeSessionKey + ".Pending", false))
+            if (!EditorApplication.isPlayingOrWillChangePlaymode && SessionState.GetBool(PlayModeSessionKey + ".Pending", false))
             {
                 EditorApplication.delayCall -= RestorePlayModeSession;
                 EditorApplication.delayCall += RestorePlayModeSession;
