@@ -1,23 +1,16 @@
 {
   "name": "com.lgcchina.t-rename-tool",
   "displayName": "LGC_TRenameTool_模型菜单翻译",
-  "version": "1.0.2",
+  "version": "2.1.1",
   "unity": "2022.3",
-  "description": "基于物体批量重命名实现手动翻译，通常用于MA形式的菜单",
+  "description": "提取并回填 VRChat 原生、Modular Avatar 与 VRCFury 菜单文字，用于配合外部翻译网页进行人工翻译。",
   "author": {
     "name": "LgcChina",
     "url": "https://github.com/LgcChina"
   },
   "vpmDependencies": {
-  "com.vrchat.avatars": "3.x.x"
+    "com.vrchat.avatars": "3.x.x"
   },
-  "keywords": [ "VRChat", "Menu", "菜单", "工具", "Unity" ,"Modular Avatar"],
-  "samples": [
-    {
-      "displayName": "示例场景与预设",
-      "description": "未包含示例场景与预设",
-      "path": "Samples~/QuickStart"
-    }
-  ]
+  "keywords": [ "VRChat", "Menu", "菜单", "翻译", "Unity", "Modular Avatar", "VRCFury" ]
 
 }

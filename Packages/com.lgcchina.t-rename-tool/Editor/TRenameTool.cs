@@ -1,400 +1,667 @@
-using UnityEngine;
-using UnityEditor;
-using System.Collections.Generic;
-using System.Text;
-using System;
-using System.Text.RegularExpressions;
-using System.Linq;
+// LGC TRenameTool 2.1.1
+// VRChat 菜单文本提取、来源筛选、人工翻译回填与安全应用窗口。
+// 更新日期：2026-11-26
 
 #if UNITY_EDITOR
-public class TRenameTool : EditorWindow
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using UnityEditor;
+using UnityEngine;
+
+namespace LGC.TRenameTool.Editor
 {
-    private List<GameObject> rootObjects = new List<GameObject>();
-    private List<GameObject> allObjects = new List<GameObject>();
-    private string nameList = "";
-    private Vector2 scrollPos, objectListScroll;
-    private bool showChildren = true;
-    private string translationStatus = "";
-    private string customSeparator = "###";
-
-    // 版本信息
-    private const string TOOL_NAME = "LGC_TRenameTool_模型菜单翻译";
-    private const string VERSION = "1.0.2";
-    private const string UPDATE_DATE = "2026-04-09";
-
-    [MenuItem("LGC/LGC_TRenameTool_模型菜单翻译")]
-    public static void ShowWindow()
+    public sealed class TRenameTool : EditorWindow
     {
-        TRenameTool window = GetWindow<TRenameTool>("LGC_TRenameTool_模型菜单翻译");
-        window.minSize = new Vector2(600, 350);
-    }
+        internal const string ToolName = "LGC_TRenameTool_模型菜单翻译";
+        internal const string Version = "2.1.1";
+        internal const string UpdateDate = "2026-11-26";
+        private const string ImportTextControlName = "LGC_TRenameTool_ImportText";
 
-    void OnEnable()
-    {
-        minSize = new Vector2(900, 650);
-    }
+        private GameObject translationTarget;
+        private UnityEngine.Object extraMenu;
+        private bool includeInactive = true;
+        private bool showOnlyChanged;
+        private string searchText = string.Empty;
+        private string exportText = string.Empty;
+        private string importText = string.Empty;
+        private string statusText = "请先选择待翻译物体或原生 VRC Expressions Menu。";
+        private MessageType statusType = MessageType.Info;
+        private Vector2 mainScroll;
+        private Vector2 exportScroll;
+        private Vector2 importScroll;
+        private Vector2 previewScroll;
+        private ScanResult scanResult = new ScanResult();
+        private TranslationParseResult parseResult = new TranslationParseResult();
 
-    void OnGUI()
-    {
-        DrawToolbar();
-
-        EditorGUILayout.BeginVertical(GUILayout.ExpandHeight(true));
+        [MenuItem("LGC/LGC_TRenameTool_模型菜单翻译")]
+        public static void ShowWindow()
         {
-            EditorGUILayout.BeginHorizontal(GUILayout.ExpandHeight(true));
-            {
-                EditorGUILayout.BeginVertical(GUILayout.Width(position.width * 0.3f), GUILayout.ExpandHeight(true));
-                DrawLeftPanel();
-                EditorGUILayout.EndVertical();
+            var window = GetWindow<TRenameTool>(ToolName + " " + Version);
+            window.minSize = new Vector2(920, 640);
+            window.Show();
+        }
 
-                EditorGUILayout.BeginVertical(GUILayout.Width(position.width * 0.48f), GUILayout.ExpandHeight(true));
-                DrawCenterPanel();
-                EditorGUILayout.EndVertical();
+        [MenuItem("LGC/LGC_TRenameTool_模型菜单翻译", true)]
+        private static bool ValidateShowWindow()
+        {
+            return !EditorApplication.isPlayingOrWillChangePlaymode;
+        }
 
-                EditorGUILayout.BeginVertical(GUILayout.Width(position.width * 0.2f), GUILayout.ExpandHeight(true));
-                DrawRightPanel();
-                EditorGUILayout.EndVertical();
-            }
+        private void OnEnable()
+        {
+            minSize = new Vector2(920, 640);
+            titleContent = new GUIContent(ToolName + " " + Version);
+        }
+
+        private void OnGUI()
+        {
+            DrawToolbar();
+            mainScroll = EditorGUILayout.BeginScrollView(mainScroll, GUILayout.ExpandHeight(true));
+            DrawSourceSection();
+            DrawSummarySection();
+            DrawTextSection();
+            DrawValidationSection();
+            DrawPreviewSection();
+            EditorGUILayout.Space(12);
+            EditorGUILayout.EndScrollView();
+            DrawFixedFooter();
+        }
+
+        private void DrawToolbar()
+        {
+            EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+            GUILayout.Label(ToolName + "  v" + Version, EditorStyles.boldLabel);
+            GUILayout.FlexibleSpace();
+            GUILayout.Label("更新：" + UpdateDate, EditorStyles.miniLabel);
             EditorGUILayout.EndHorizontal();
         }
-        EditorGUILayout.EndVertical();
-    }
 
-    void DrawToolbar()
-    {
-        EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
+        private void DrawSourceSection()
         {
-            EditorGUILayout.LabelField($"{TOOL_NAME} {VERSION}", EditorStyles.boldLabel, GUILayout.Width(520)/*520，LGC，当然爱自己啊*/);
-            GUILayout.FlexibleSpace();
-            EditorGUILayout.LabelField($"更新: {UPDATE_DATE}", EditorStyles.miniLabel);
-        }
-        EditorGUILayout.EndHorizontal();
-        GUILayout.Space(5);
-    }
-
-    // ===================== 纯原生 ObjectField 拖拽，无任何多余按钮 =====================
-    void DrawLeftPanel()
-    {
-        EditorGUILayout.LabelField("根物体输入", EditorStyles.boldLabel);
-        GUILayout.BeginVertical("box");
-        {
-            // 原生Unity物体选择框，完美支持：拖拽 + 点选 + 显示
-            GameObject newObj = (GameObject)EditorGUILayout.ObjectField(
-                "拖拽/选择根物体",
-                rootObjects.Count > 0 ? rootObjects[0] : null,
-                typeof(GameObject),
-                true,
-                GUILayout.Height(50)
-            );
-
-            // 拖拽/选择物体后自动加载
-            if (newObj != null && (rootObjects.Count == 0 || rootObjects[0] != newObj))
+            EditorGUILayout.Space(8);
+            EditorGUILayout.LabelField("1. 扫描来源", EditorStyles.boldLabel);
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                rootObjects.Clear();
-                rootObjects.Add(newObj);
-                UpdateObjectList();
-                ExtractNames();
+                translationTarget = (GameObject)EditorGUILayout.ObjectField(
+                    new GUIContent("待翻译物体", "扫描此物体及其全部子级中的原生 VRC、Modular Avatar 和 VRCFury 菜单。"),
+                    translationTarget,
+                    typeof(GameObject),
+                    true);
+
+                extraMenu = EditorGUILayout.ObjectField(
+                    new GUIContent("额外原生菜单", "可直接拖入一个 Assets 下的 VRCExpressionsMenu，与待翻译物体同时扫描。"),
+                    extraMenu,
+                    typeof(UnityEngine.Object),
+                    false);
+
+                EditorGUILayout.BeginHorizontal();
+                includeInactive = EditorGUILayout.ToggleLeft("包含未激活物体", includeInactive, GUILayout.Width(150));
+                if (GUILayout.Button("使用当前选中物体", GUILayout.Width(140)))
+                {
+                    translationTarget = Selection.activeGameObject;
+                }
+
+                GUILayout.FlexibleSpace();
+                using (new EditorGUI.DisabledScope(translationTarget == null && extraMenu == null))
+                {
+                    if (GUILayout.Button("扫描待翻译按钮", GUILayout.Height(30), GUILayout.Width(170)))
+                    {
+                        Scan();
+                    }
+                }
+
+                EditorGUILayout.EndHorizontal();
             }
         }
-        GUILayout.EndVertical();
-        GUILayout.Space(1);
 
-        // 子物体显示区域（原版原样保留）
-        if (allObjects.Count > 0)
+        private void DrawSummarySection()
         {
-            EditorGUILayout.LabelField("所有子级物体", EditorStyles.boldLabel);
-            showChildren = EditorGUILayout.Foldout(showChildren, $"显示子物体 ({allObjects.Count}个)", true);
-            if (showChildren)
+            if (scanResult.Entries.Count == 0 && scanResult.Warnings.Count == 0)
             {
+                EditorGUILayout.HelpBox(statusText, statusType);
+                return;
+            }
 
-                objectListScroll = EditorGUILayout.BeginScrollView(objectListScroll, "box", GUILayout.ExpandHeight(true));
+            EditorGUILayout.Space(6);
+            EditorGUILayout.LabelField("扫描结果", EditorStyles.boldLabel);
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                var activeEntries = GetActiveEntries();
+                EditorGUILayout.LabelField(
+                    string.Format(
+                        "共找到 {0} 条，当前选择 {1} 条：原生 VRC {2} / Modular Avatar {3} / VRCFury {4}",
+                        scanResult.Entries.Count,
+                        activeEntries.Count,
+                        activeEntries.Count(e => e.SourceKind == TranslationSourceKind.VrcMenu),
+                        activeEntries.Count(e => e.SourceKind == TranslationSourceKind.ModularAvatar),
+                        activeEntries.Count(e => e.SourceKind == TranslationSourceKind.VrcFury)));
+
+                if (scanResult.Warnings.Count > 0)
                 {
-                    foreach (var obj in allObjects)
+                    EditorGUILayout.HelpBox(string.Join("\n", scanResult.Warnings.ToArray()), MessageType.Warning);
+                }
+
+                EditorGUILayout.HelpBox(statusText, statusType);
+            }
+
+            if (scanResult.Groups.Count > 0)
+            {
+                DrawSourceGroups();
+            }
+        }
+
+        private void DrawSourceGroups()
+        {
+            EditorGUILayout.Space(4);
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("找到的菜单来源", EditorStyles.boldLabel);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("全选来源", GUILayout.Width(80)))
+            {
+                SetAllSourceGroups(true);
+            }
+
+            if (GUILayout.Button("全不选", GUILayout.Width(70)))
+            {
+                SetAllSourceGroups(false);
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                foreach (var group in scanResult.Groups)
+                {
+                    DrawSourceGroup(group);
+                }
+            }
+        }
+
+        private void DrawSourceGroup(TranslationSourceGroup group)
+        {
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.BeginHorizontal();
+                group.Expanded = GUILayout.Toggle(
+                    group.Expanded,
+                    GUIContent.none,
+                    EditorStyles.foldout,
+                    GUILayout.Width(14));
+                var enabled = EditorGUILayout.Toggle(group.Enabled, GUILayout.Width(20));
+                if (enabled != group.Enabled)
+                {
+                    SetSourceGroupEnabled(group, enabled);
+                }
+
+                GUILayout.Label(group.SourceSummary, EditorStyles.miniBoldLabel, GUILayout.Width(90));
+                GUILayout.Label(group.Entries.Count + " 条", GUILayout.Width(45));
+                GUILayout.Label(new GUIContent(group.DisplayPath, group.DisplayPath), EditorStyles.miniLabel);
+                if (GUILayout.Button("定位", GUILayout.Width(50)))
+                {
+                    Locate(group.Owner);
+                }
+
+                EditorGUILayout.EndHorizontal();
+
+                if (group.Expanded)
+                {
+                    foreach (var entry in group.Entries)
                     {
                         EditorGUILayout.BeginHorizontal();
-                        {
-                            EditorGUILayout.ObjectField(obj, typeof(GameObject), true, GUILayout.Width(120));
-                            GUILayout.Label(obj.name, GUILayout.ExpandWidth(true));
-                        }
+                        GUILayout.Space(34);
+                        GUILayout.Label(entry.SourceKind.CompactName(), EditorStyles.miniLabel, GUILayout.Width(70));
+                        GUILayout.Label(new GUIContent(entry.Original, entry.DisplayPath), EditorStyles.miniLabel);
                         EditorGUILayout.EndHorizontal();
                     }
                 }
+            }
+        }
+
+        private void DrawTextSection()
+        {
+            if (GetActiveEntries().Count == 0)
+            {
+                return;
+            }
+
+            EditorGUILayout.Space(8);
+            EditorGUILayout.LabelField("2. 复制原文并粘贴译文", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox(
+                "请完整保留 ID 编号。翻译网页即使更改空格、冒号、括号、空行或添加 Markdown 代码块，工具也会尝试恢复；编号全部丢失时，仅在非空行数量完全一致的情况下按顺序降级解析。",
+                MessageType.Info);
+
+            EditorGUILayout.BeginHorizontal();
+            DrawTextColumn("待翻译原文（只读）", ref exportText, ref exportScroll, true);
+            GUILayout.Space(6);
+            EditorGUI.BeginChangeCheck();
+            DrawTextColumn("翻译后文本", ref importText, ref importScroll, false);
+            if (EditorGUI.EndChangeCheck())
+            {
+                InvalidateParsedTranslations();
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("复制待翻译文本", GUILayout.Height(28)))
+            {
+                EditorGUIUtility.systemCopyBuffer = exportText;
+                SetStatus("已复制待翻译文本。", MessageType.Info);
+            }
+
+            if (GUILayout.Button("从剪贴板粘贴译文", GUILayout.Height(28)))
+            {
+                PasteTranslationsFromClipboard();
+            }
+
+            if (GUILayout.Button("清空译文", GUILayout.Height(28)))
+            {
+                ClearTranslations("已清空译文。");
+            }
+
+            if (GUILayout.Button("打开翻译网站 ▾", GUILayout.Height(28)))
+            {
+                ShowTranslationWebsiteMenu();
+            }
+
+            EditorGUILayout.EndHorizontal();
+        }
+
+        private static void DrawTextColumn(string title, ref string value, ref Vector2 scroll, bool readOnly)
+        {
+            using (new EditorGUILayout.VerticalScope(GUILayout.MinWidth(380)))
+            {
+                EditorGUILayout.LabelField(title, EditorStyles.boldLabel);
+                scroll = EditorGUILayout.BeginScrollView(scroll, EditorStyles.helpBox, GUILayout.Height(190));
+                if (readOnly)
+                {
+                    using (new EditorGUI.DisabledScope(true))
+                    {
+                        EditorGUILayout.TextArea(value, GUILayout.ExpandHeight(true));
+                    }
+                }
+                else
+                {
+                    GUI.SetNextControlName(ImportTextControlName);
+                    value = EditorGUILayout.TextArea(value, GUILayout.ExpandHeight(true));
+                }
+
                 EditorGUILayout.EndScrollView();
             }
         }
-        else
-        {
-            EditorGUILayout.HelpBox("未添加根物体", MessageType.Info);
-        }
-    }
 
-    void DrawCenterPanel()
-    {
-        EditorGUILayout.LabelField("名称编辑区", EditorStyles.boldLabel);
-
-        GUILayout.BeginVertical("box");
+        private void DrawValidationSection()
         {
-            GUILayout.BeginHorizontal();
+            if (GetActiveEntries().Count == 0)
             {
-                GUILayout.Label("自定义分隔符:", GUILayout.Width(100));
-                string newSeparator = EditorGUILayout.TextField(customSeparator, GUILayout.ExpandWidth(true));
-                if (newSeparator != customSeparator && !string.IsNullOrEmpty(newSeparator))
+                return;
+            }
+
+            EditorGUILayout.Space(6);
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField("3. 校验译文", EditorStyles.boldLabel);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button("解析并更新预览", GUILayout.Width(160), GUILayout.Height(26)))
+            {
+                ParseTranslations();
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            if (parseResult.HasAttempted)
+            {
+                EditorGUILayout.HelpBox(parseResult.Summary, parseResult.IsValid ? MessageType.Info : MessageType.Error);
+                if (parseResult.Warnings.Count > 0)
                 {
-                    customSeparator = newSeparator;
+                    EditorGUILayout.HelpBox(string.Join("\n", parseResult.Warnings.ToArray()), MessageType.Warning);
                 }
             }
-            GUILayout.EndHorizontal();
-        }
-        GUILayout.EndVertical();
-        GUILayout.Space(10);
-
-        // 100%还原你的原始关键提示
-        EditorGUILayout.HelpBox(
-            $"1. 分隔符 {customSeparator} 建议是纯符号，翻译软件不要翻译或删除才行\n" +
-            $"2. 翻译后即使无空行（如：服装{customSeparator}靴子{customSeparator}袜子（仅限电脑）），仍能正确分割\n" +
-            $"3. 若 {customSeparator} 意外丢失，可手动补加，或按空行分隔（兼容降级）\n" +
-            $"4. {customSeparator} 不会被应用到物体名称中\n\n" +
-            "注意：由于翻译接口不再提供服务，不过，依然可手动复制提取的文本到外站翻译回来应用",
-            MessageType.Warning
-        );
-
-        float textAreaHeight = position.height * 0.5f;
-        scrollPos = EditorGUILayout.BeginScrollView(scrollPos, "box", GUILayout.Height(textAreaHeight));
-        {
-            nameList = EditorGUILayout.TextArea(nameList, GUILayout.ExpandHeight(true));
-        }
-        EditorGUILayout.EndScrollView();
-
-        if (!string.IsNullOrEmpty(translationStatus))
-        {
-            EditorGUILayout.HelpBox(translationStatus,
-                translationStatus.Contains("失败") || translationStatus.Contains("错误")
-                ? MessageType.Error : MessageType.Info);
         }
 
-        if (allObjects.Count > 0)
+        private void DrawPreviewSection()
         {
-            int nameCount = CountNamesInList();
-            string status = nameCount == allObjects.Count
-                ? $"<color=green>名称数量匹配: {nameCount}/{allObjects.Count}</color>"
-                : $"<color=red>名称数量不匹配: {nameCount}/{allObjects.Count}</color>\n" +
-                  $"<color=red>请检查 {customSeparator} 是否完整保留</color>";
-            EditorGUILayout.LabelField(status, new GUIStyle(EditorStyles.label)
+            if (!parseResult.HasAttempted || GetActiveEntries().Count == 0)
             {
-                richText = true,
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = 12,
-                wordWrap = true
-            });
-        }
-    }
-
-    void DrawRightPanel()
-    {
-        EditorGUILayout.LabelField("操作", EditorStyles.boldLabel);
-        GUILayout.BeginVertical("box", GUILayout.ExpandHeight(true));
-        {
-            GUILayout.Space(10);
-            GUILayout.FlexibleSpace();
-
-            GUI.backgroundColor = Color.white;
-
-            // 提取
-            if (GUILayout.Button("提取", GUILayout.Height(50)))
-            {
-                ExtractNames();
-            }
-            GUILayout.Space(5);
-            // 唯一的清空所有按钮（移除）
-            if (GUILayout.Button("移除", GUILayout.Height(50)))
-            {
-                ClearAll();
-            }
-            GUILayout.Space(15);
-
-            // 复制/粘贴/清除内容（仅输入框）
-            if (GUILayout.Button("复制内容", GUILayout.Height(30)))
-            {
-                CopyToClipboard();
-            }
-            GUILayout.Space(5);
-            if (GUILayout.Button("粘贴内容", GUILayout.Height(30)))
-            {
-                PasteFromClipboard();
-            }
-            GUILayout.Space(5);
-            if (GUILayout.Button("清除内容", GUILayout.Height(30)))
-            {
-                ClearInputOnly();
-            }
-            GUILayout.Space(15);
-
-
-
-
-            // 应用
-            GUI.enabled = allObjects.Count > 0;
-            if (GUILayout.Button("应用", GUILayout.Height(50)))
-            {
-                ApplyRenaming();
-            }
-            GUI.enabled = true;
-            GUILayout.Space(15);
-
-            // 翻译网站
-            if (GUILayout.Button("翻译网站", GUILayout.Height(30)))
-            {
-                ShowTranslationWebsitesMenu();
+                return;
             }
 
-            GUILayout.FlexibleSpace();
-            GUILayout.Space(10);
-        }
-        GUILayout.EndVertical();
-    }
-
-    // 复制粘贴功能
-    void CopyToClipboard()
-    {
-        if (string.IsNullOrEmpty(nameList))
-        {
-            translationStatus = "复制失败：内容为空！";
-            return;
-        }
-        EditorGUIUtility.systemCopyBuffer = nameList;
-        translationStatus = "复制成功：内容已复制到剪切板！";
-    }
-
-    void PasteFromClipboard()
-    {
-        nameList = EditorGUIUtility.systemCopyBuffer;
-        translationStatus = "粘贴成功：已加载剪切板内容！";
-    }
-
-    // 仅清空输入框
-    void ClearInputOnly()
-    {
-        nameList = "";
-        translationStatus = "已清除输入框内容";
-    }
-
-    #region 核心功能
-    void ExtractNames()
-    {
-        if (allObjects.Count == 0)
-        {
-            EditorUtility.DisplayDialog("提示", "没有物体可提取名称", "确定");
-            return;
-        }
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < allObjects.Count; i++)
-        {
-            sb.Append(allObjects[i].name);
-            if (i < allObjects.Count - 1)
+            EditorGUILayout.Space(8);
+            EditorGUILayout.LabelField("4. 修改预览", EditorStyles.boldLabel);
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
             {
-                sb.Append(customSeparator + "\n\n");
+                showOnlyChanged = EditorGUILayout.ToggleLeft("只显示有变化", showOnlyChanged, GUILayout.Width(130));
+                GUILayout.Label("搜索", GUILayout.Width(35));
+                searchText = EditorGUILayout.TextField(searchText);
+                if (GUILayout.Button("全选", GUILayout.Width(60)))
+                {
+                    foreach (var entry in GetActiveEntries())
+                    {
+                        entry.Selected = true;
+                    }
+                }
+
+                if (GUILayout.Button("全不选", GUILayout.Width(60)))
+                {
+                    foreach (var entry in GetActiveEntries())
+                    {
+                        entry.Selected = false;
+                    }
+                }
+            }
+
+            previewScroll = EditorGUILayout.BeginScrollView(previewScroll, EditorStyles.helpBox, GUILayout.Height(250));
+            foreach (var entry in FilteredEntries())
+            {
+                DrawPreviewEntry(entry);
+            }
+
+            EditorGUILayout.EndScrollView();
+            EditorGUILayout.HelpBox(
+                "应用支持 Unity Undo，但不会自动保存场景、Prefab 或资源。MA 菜单 label 为空时，译文会写入 label，不会重命名 GameObject。",
+                MessageType.Warning);
+        }
+
+        private IEnumerable<TranslationEntry> FilteredEntries()
+        {
+            var query = GetActiveEntries().AsEnumerable();
+            if (showOnlyChanged)
+            {
+                query = query.Where(entry => entry.HasChange);
+            }
+
+            if (!string.IsNullOrWhiteSpace(searchText))
+            {
+                var needle = searchText.Trim();
+                query = query.Where(entry =>
+                    entry.SourceKind.DisplayName().IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    entry.SourceKind.CompactName().IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    entry.Original.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (entry.Translation ?? string.Empty).IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    entry.DisplayPath.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    entry.SourceGroup.DisplayPath.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+
+            return query;
+        }
+
+        private static void DrawPreviewEntry(TranslationEntry entry)
+        {
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+            {
+                entry.Selected = EditorGUILayout.Toggle(entry.Selected, GUILayout.Width(20));
+                GUILayout.Label(entry.SourceKind.CompactName(), EditorStyles.miniBoldLabel, GUILayout.Width(72));
+                GUILayout.Label(new GUIContent("（原名）" + entry.Original, entry.Original), GUILayout.Width(180));
+                GUILayout.Label("→", GUILayout.Width(18));
+                GUILayout.Label(
+                    new GUIContent("（译名）" + (entry.Translation ?? string.Empty), entry.Translation ?? string.Empty),
+                    entry.HasChange ? EditorStyles.boldLabel : EditorStyles.label,
+                    GUILayout.Width(180));
+                GUILayout.Space(12);
+                GUILayout.Label(new GUIContent(entry.DisplayPath, entry.DisplayPath), EditorStyles.miniLabel, GUILayout.MinWidth(150));
+                if (GUILayout.Button("定位", GUILayout.Width(50)))
+                {
+                    Locate(entry.SourceGroup.Owner);
+                }
             }
         }
-        nameList = sb.ToString();
-        translationStatus = $"已提取 {allObjects.Count} 个名称（分隔符：{customSeparator}）\n提示：可手动复制翻译";
-    }
 
-    private string[] SplitNames(string text)
-    {
-        if (string.IsNullOrEmpty(text)) return new string[0];
-        text = text.Replace("\r\n", "\n").Replace("\r", "\n");
-
-        string[] specialSplitResult = Regex.Split(text, Regex.Escape(customSeparator))
-            .Select(part => part.Trim('\n', ' ', '\t'))
-            .Where(part => !string.IsNullOrEmpty(part))
-            .ToArray();
-
-        if (specialSplitResult.Length == allObjects.Count)
-            return specialSplitResult;
-
-        translationStatus = $"警告：{customSeparator} 标记不完整，尝试按空行分割";
-        string[] fallbackSplit = text.Split(new[] { "\n\n" }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(part => part.Trim('\n', ' ', '\t'))
-            .ToArray();
-        return fallbackSplit;
-    }
-
-    int CountNamesInList()
-    {
-        return string.IsNullOrEmpty(nameList) ? 0 : SplitNames(nameList).Length;
-    }
-    #endregion
-
-    #region 辅助功能
-    void ShowTranslationWebsitesMenu()
-    {
-        GenericMenu menu = new GenericMenu();
-        menu.AddItem(new GUIContent("谷歌翻译"), false, () => OpenTranslationWebsite("google", nameList));
-        menu.AddItem(new GUIContent("必应翻译"), false, () => OpenTranslationWebsite("bing", nameList));
-        menu.AddItem(new GUIContent("百度翻译"), false, () => OpenTranslationWebsite("baidu", nameList));
-        menu.AddItem(new GUIContent("有道翻译"), false, () => OpenTranslationWebsite("youdao", nameList));
-        menu.ShowAsContext();
-    }
-
-    void OpenTranslationWebsite(string website, string text)
-    {
-        string url = website switch
+        private void DrawFixedFooter()
         {
-            "google" => $"https://translate.google.com/?text={Uri.EscapeDataString(text)}",
-            "bing" => "https://www.bing.com/translator",
-            "baidu" => "https://fanyi.baidu.com/",
-            "youdao" => "https://fanyi.youdao.com/",
-            _ => ""
-        };
-        if (!string.IsNullOrEmpty(url)) Application.OpenURL(url);
-    }
+            var activeEntries = GetActiveEntries();
+            var changedSelected = activeEntries.Count(entry => entry.Selected && entry.HasChange);
+            var validation = !parseResult.HasAttempted ? "尚未校验" : parseResult.IsValid ? "校验通过" : "校验失败";
+            var warningCount = scanResult.Warnings.Count + parseResult.Warnings.Count;
 
-    void UpdateObjectList()
-    {
-        allObjects.Clear();
-        foreach (var root in rootObjects)
-            CollectChildrenRecursive(root.transform);
-    }
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox, GUILayout.Height(46)))
+            {
+                GUILayout.Label(
+                    string.Format(
+                        "{0}  |  已选择 {1} 项修改  |  {2} 个错误  |  {3} 个警告",
+                        validation,
+                        changedSelected,
+                        parseResult.ErrorCount,
+                        warningCount),
+                    parseResult.IsValid ? EditorStyles.boldLabel : EditorStyles.label);
+                GUILayout.FlexibleSpace();
 
-    void CollectChildrenRecursive(Transform parent)
-    {
-        allObjects.Add(parent.gameObject);
-        for (int i = 0; i < parent.childCount; i++)
-            CollectChildrenRecursive(parent.GetChild(i));
-    }
+                using (new EditorGUI.DisabledScope(translationTarget == null && extraMenu == null))
+                {
+                    if (GUILayout.Button("重新扫描", GUILayout.Width(100), GUILayout.Height(30)))
+                    {
+                        Scan();
+                    }
+                }
 
-    // 右侧移除按钮：清空所有（唯一的清空功能）
-    void ClearAll()
-    {
-        rootObjects.Clear();
-        allObjects.Clear();
-        nameList = "";
-        translationStatus = "已清除所有内容";
-    }
+                using (new EditorGUI.DisabledScope(!parseResult.IsValid || changedSelected == 0))
+                {
+                    var previousColor = GUI.backgroundColor;
+                    GUI.backgroundColor = new Color(0.55f, 0.9f, 0.65f);
+                    if (GUILayout.Button("应用所选修改（" + changedSelected + "）", GUILayout.Width(190), GUILayout.Height(30)))
+                    {
+                        ApplyTranslations();
+                    }
 
-    void ApplyRenaming()
-    {
-        if (allObjects.Count == 0)
-        {
-            EditorUtility.DisplayDialog("错误", "没有物体可重命名!", "确定");
-            return;
+                    GUI.backgroundColor = previousColor;
+                }
+            }
         }
 
-        string[] newNames = SplitNames(nameList);
-        if (newNames.Length != allObjects.Count)
+        private void Scan()
         {
-            EditorUtility.DisplayDialog("数量不匹配",
-                $"名称数({newNames.Length})与物体数({allObjects.Count})不匹配！\n请检查分隔符", "确定");
-            return;
+            try
+            {
+                scanResult = MenuTranslationScanner.Scan(translationTarget, extraMenu, includeInactive);
+                importText = string.Empty;
+                parseResult = new TranslationParseResult();
+                RebuildExportText();
+                if (scanResult.Entries.Count == 0)
+                {
+                    SetStatus("扫描完成，但没有找到可翻译的菜单文字。请确认选择的是待翻译物体或 Assets 下的 VRCExpressionsMenu。", MessageType.Warning);
+                }
+                else
+                {
+                    SetStatus(
+                        "扫描完成：在 " + scanResult.Groups.Count + " 个物体或资源中提取了 " + scanResult.Entries.Count + " 条菜单文字。",
+                        MessageType.Info);
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogException(exception);
+                scanResult = new ScanResult();
+                exportText = string.Empty;
+                importText = string.Empty;
+                parseResult = new TranslationParseResult();
+                SetStatus("扫描失败：" + exception.Message, MessageType.Error);
+            }
         }
 
-        Undo.RecordObjects(allObjects.ToArray(), "批量重命名");
-        for (int i = 0; i < allObjects.Count; i++)
+        private void ParseTranslations()
         {
-            allObjects[i].name = newNames[i].Replace(customSeparator, "").Trim();
+            var activeEntries = GetActiveEntries();
+            parseResult = TranslationTextCodec.Parse(importText, activeEntries);
+            SetStatus(parseResult.Summary, parseResult.IsValid ? MessageType.Info : MessageType.Error);
         }
-        AssetDatabase.Refresh();
-        translationStatus = $"已应用重命名 ({allObjects.Count}个物体)";
+
+        private void PasteTranslationsFromClipboard()
+        {
+            importText = EditorGUIUtility.systemCopyBuffer ?? string.Empty;
+            importScroll = Vector2.zero;
+            GUI.FocusControl(null);
+            Repaint();
+            ParseTranslations();
+        }
+
+        private void ApplyTranslations()
+        {
+            if (!parseResult.IsValid)
+            {
+                SetStatus("译文校验未通过，未进行任何修改。", MessageType.Error);
+                return;
+            }
+
+            var result = TranslationApplier.Apply(GetActiveEntries());
+            SetStatus(result.Message, result.Success ? MessageType.Info : MessageType.Error);
+            if (result.Success)
+            {
+                Scan();
+                statusText = result.Message + " 已重新扫描，请在 Unity 中检查结果；工具未自动保存。";
+            }
+        }
+
+        private void SetSourceGroupEnabled(TranslationSourceGroup group, bool enabled)
+        {
+            if (!ConfirmSourceSelectionReset())
+            {
+                return;
+            }
+
+            group.Enabled = enabled;
+            ResetAfterSourceSelectionChanged();
+        }
+
+        private void SetAllSourceGroups(bool enabled)
+        {
+            if (scanResult.Groups.All(group => group.Enabled == enabled) || !ConfirmSourceSelectionReset())
+            {
+                return;
+            }
+
+            foreach (var group in scanResult.Groups)
+            {
+                group.Enabled = enabled;
+            }
+
+            ResetAfterSourceSelectionChanged();
+        }
+
+        private bool ConfirmSourceSelectionReset()
+        {
+            if (string.IsNullOrWhiteSpace(importText) && !parseResult.HasAttempted)
+            {
+                return true;
+            }
+
+            return EditorUtility.DisplayDialog(
+                "切换菜单来源",
+                "切换来源会重建 ID 编号，并清空当前译文与修改预览，避免译文对应到错误按钮。是否继续？",
+                "切换并清空",
+                "取消");
+        }
+
+        private void ResetAfterSourceSelectionChanged()
+        {
+            foreach (var entry in scanResult.Entries)
+            {
+                entry.Id = string.Empty;
+                entry.Translation = string.Empty;
+                entry.Selected = true;
+            }
+
+            importText = string.Empty;
+            parseResult = new TranslationParseResult();
+            RebuildExportText();
+            SetStatus("已按所选来源重建待翻译文本。", MessageType.Info);
+        }
+
+        private void ClearTranslations(string message)
+        {
+            GUI.FocusControl(null);
+            GUIUtility.hotControl = 0;
+            GUIUtility.keyboardControl = 0;
+            EditorGUIUtility.editingTextField = false;
+            importText = string.Empty;
+            importScroll = Vector2.zero;
+            parseResult = new TranslationParseResult();
+            foreach (var entry in scanResult.Entries)
+            {
+                entry.Translation = string.Empty;
+            }
+
+            SetStatus(message, MessageType.Info);
+            EditorApplication.delayCall += ClearTranslationsAfterGuiEvent;
+        }
+
+        private void ClearTranslationsAfterGuiEvent()
+        {
+            EditorApplication.delayCall -= ClearTranslationsAfterGuiEvent;
+            GUI.FocusControl(null);
+            GUIUtility.hotControl = 0;
+            GUIUtility.keyboardControl = 0;
+            EditorGUIUtility.editingTextField = false;
+            importText = string.Empty;
+            importScroll = Vector2.zero;
+            parseResult = new TranslationParseResult();
+            foreach (var entry in scanResult.Entries)
+            {
+                entry.Translation = string.Empty;
+            }
+
+            Repaint();
+        }
+
+        private void InvalidateParsedTranslations()
+        {
+            parseResult = new TranslationParseResult();
+            foreach (var entry in scanResult.Entries)
+            {
+                entry.Translation = string.Empty;
+            }
+
+            statusText = "译文内容已更改，请重新解析并检查预览。";
+            statusType = MessageType.Info;
+        }
+
+        private void RebuildExportText()
+        {
+            foreach (var entry in scanResult.Entries)
+            {
+                entry.Id = string.Empty;
+            }
+
+            exportText = TranslationTextCodec.Export(GetActiveEntries());
+        }
+
+        private List<TranslationEntry> GetActiveEntries()
+        {
+            return scanResult.Entries
+                .Where(entry => entry.SourceGroup != null && entry.SourceGroup.Enabled)
+                .ToList();
+        }
+
+        private static void Locate(UnityEngine.Object target)
+        {
+            if (target == null)
+            {
+                return;
+            }
+
+            Selection.activeObject = target;
+            EditorGUIUtility.PingObject(target);
+        }
+
+        private void ShowTranslationWebsiteMenu()
+        {
+            var menu = new GenericMenu();
+            menu.AddItem(new GUIContent("Google 翻译"), false, () => OpenUrl("https://translate.google.com/"));
+            menu.AddItem(new GUIContent("Bing 翻译"), false, () => OpenUrl("https://www.bing.com/translator"));
+            menu.AddItem(new GUIContent("百度翻译"), false, () => OpenUrl("https://fanyi.baidu.com/"));
+            menu.AddItem(new GUIContent("有道翻译"), false, () => OpenUrl("https://fanyi.youdao.com/"));
+            menu.ShowAsContext();
+        }
+
+        private static void OpenUrl(string url)
+        {
+            Application.OpenURL(url);
+        }
+
+        private void SetStatus(string message, MessageType type)
+        {
+            statusText = message;
+            statusType = type;
+            Repaint();
+        }
     }
-    #endregion
 }
 #endif

@@ -1,5 +1,5 @@
 /*/
 !com.vrchat.core.*
 
-# Change this to match your new package name
-!com.vrchat.demo-template 
+# Keep the published package in source control.
+!com.lgcchina.t-rename-tool
