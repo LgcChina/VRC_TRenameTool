@@ -1,6 +1,6 @@
-// LGC TRenameTool 2.2.0
+// LGC TRenameTool 2.3.1
 // VRChat 菜单文本提取、来源筛选、人工翻译回填与安全应用窗口。
-// 更新日期：2026-11-26
+// 更新日期：2026-11-27
 
 #if UNITY_EDITOR
 using System;
@@ -14,15 +14,19 @@ namespace LGC.TRenameTool.Editor
     public sealed class TRenameTool : EditorWindow
     {
         internal const string ToolName = "LGC_TRenameTool_模型菜单翻译";
-        internal const string Version = "2.2.0";
-        internal const string UpdateDate = "2026-11-26";
+        internal const string Version = "2.3.1";
+        internal const string UpdateDate = "2026-11-27";
         private const string ImportTextControlName = "LGC_TRenameTool_ImportText";
-        private const string PlayModeSessionKey = "LGC_TRenameTool_PlayModeSession_2";
+        private const string PlayModeSessionKey = "LGC_TRenameTool_PlayModeSession_3";
 
         private GameObject translationTarget;
         private UnityEngine.Object extraMenu;
         private bool includeInactive = true;
+        private bool renameModularAvatarObjects = true;
         private bool showOnlyChanged;
+        private bool vrcSourcesExpanded;
+        private bool maSourcesExpanded;
+        private bool vrcFurySourcesExpanded;
         private string searchText = string.Empty;
         private string exportText = string.Empty;
         private string importText = string.Empty;
@@ -41,6 +45,7 @@ namespace LGC.TRenameTool.Editor
             public string TranslationTargetKey;
             public string ExtraMenuKey;
             public bool IncludeInactive;
+            public bool RenameModularAvatarObjects;
             public bool ShowOnlyChanged;
             public string SearchText;
             public string ImportText;
@@ -116,18 +121,19 @@ namespace LGC.TRenameTool.Editor
                     true);
 
                 extraMenu = EditorGUILayout.ObjectField(
-                    new GUIContent("额外原生菜单", "可直接拖入一个 Assets 下的 VRCExpressionsMenu，与待翻译物体同时扫描。"),
+                    new GUIContent("原生菜单翻译", "可直接拖入一个 Assets 下的 VRCExpressionsMenu，与待翻译物体同时扫描和翻译。"),
                     extraMenu,
                     typeof(UnityEngine.Object),
                     false);
 
                 EditorGUILayout.BeginHorizontal();
                 includeInactive = EditorGUILayout.ToggleLeft("包含未激活物体", includeInactive, GUILayout.Width(150));
-                if (GUILayout.Button("使用当前选中物体", GUILayout.Width(140)))
-                {
-                    translationTarget = Selection.activeGameObject;
-                }
-
+                renameModularAvatarObjects = EditorGUILayout.ToggleLeft(
+                    new GUIContent(
+                        "MA 菜单翻译时同步修改物体名称",
+                        "开启后，Modular Avatar 菜单按钮的译文会同时写入 label 和所在 GameObject 名称。可能影响依赖层级路径的动画或工具。"),
+                    renameModularAvatarObjects,
+                    GUILayout.Width(260));
                 GUILayout.FlexibleSpace();
                 using (new EditorGUI.DisabledScope(translationTarget == null && extraMenu == null))
                 {
@@ -149,26 +155,10 @@ namespace LGC.TRenameTool.Editor
                 return;
             }
 
-            EditorGUILayout.Space(6);
-            EditorGUILayout.LabelField("扫描结果", EditorStyles.boldLabel);
-            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            if (scanResult.Warnings.Count > 0)
             {
-                var activeEntries = GetActiveEntries();
-                EditorGUILayout.LabelField(
-                    string.Format(
-                        "共找到 {0} 条，当前选择 {1} 条：原生 VRC {2} / Modular Avatar {3} / VRCFury {4}",
-                        scanResult.Entries.Count,
-                        activeEntries.Count,
-                        activeEntries.Count(e => e.SourceKind == TranslationSourceKind.VrcMenu),
-                        activeEntries.Count(e => e.SourceKind == TranslationSourceKind.ModularAvatar),
-                        activeEntries.Count(e => e.SourceKind == TranslationSourceKind.VrcFury)));
-
-                if (scanResult.Warnings.Count > 0)
-                {
-                    EditorGUILayout.HelpBox(string.Join("\n", scanResult.Warnings.ToArray()), MessageType.Warning);
-                }
-
-                EditorGUILayout.HelpBox(statusText, statusType);
+                EditorGUILayout.Space(6);
+                EditorGUILayout.HelpBox(string.Join("\n", scanResult.Warnings.ToArray()), MessageType.Warning);
             }
 
             if (scanResult.Groups.Count > 0)
@@ -197,15 +187,45 @@ namespace LGC.TRenameTool.Editor
 
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                foreach (var group in scanResult.Groups)
+                DrawSourceCategory(TranslationSourceKind.VrcMenu, "原生 VRC 菜单", ref vrcSourcesExpanded);
+                DrawSourceCategory(TranslationSourceKind.ModularAvatar, "Modular Avatar 菜单", ref maSourcesExpanded);
+                DrawSourceCategory(TranslationSourceKind.VrcFury, "VRCFury 菜单", ref vrcFurySourcesExpanded);
+            }
+        }
+
+        private void DrawSourceCategory(TranslationSourceKind kind, string title, ref bool expanded)
+        {
+            var groups = scanResult.Groups
+                .Where(group => group.Entries.Any(entry => entry.SourceKind == kind))
+                .ToList();
+            if (groups.Count == 0)
+            {
+                return;
+            }
+
+            var entryCount = groups.Sum(group => group.Entries.Count(entry => entry.SourceKind == kind));
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                expanded = EditorGUILayout.Foldout(
+                    expanded,
+                    title + "（" + groups.Count + " 个来源 / " + entryCount + " 条）",
+                    true,
+                    EditorStyles.foldoutHeader);
+                if (!expanded)
                 {
-                    DrawSourceGroup(group);
+                    return;
+                }
+
+                foreach (var group in groups)
+                {
+                    DrawSourceGroup(group, kind);
                 }
             }
         }
 
-        private void DrawSourceGroup(TranslationSourceGroup group)
+        private void DrawSourceGroup(TranslationSourceGroup group, TranslationSourceKind kind)
         {
+            var categoryEntries = group.Entries.Where(entry => entry.SourceKind == kind).ToList();
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 EditorGUILayout.BeginHorizontal();
@@ -220,8 +240,8 @@ namespace LGC.TRenameTool.Editor
                     SetSourceGroupEnabled(group, enabled);
                 }
 
-                GUILayout.Label(group.SourceSummary, EditorStyles.miniBoldLabel, GUILayout.Width(90));
-                GUILayout.Label(group.Entries.Count + " 条", GUILayout.Width(45));
+                GUILayout.Label(kind.CompactName(), EditorStyles.miniBoldLabel, GUILayout.Width(90));
+                GUILayout.Label(categoryEntries.Count + " 条", GUILayout.Width(45));
                 GUILayout.Label(new GUIContent(group.DisplayPath, group.DisplayPath), EditorStyles.miniLabel);
                 if (GUILayout.Button("定位", GUILayout.Width(50)))
                 {
@@ -232,7 +252,7 @@ namespace LGC.TRenameTool.Editor
 
                 if (group.Expanded)
                 {
-                    foreach (var entry in group.Entries)
+                    foreach (var entry in categoryEntries)
                     {
                         EditorGUILayout.BeginHorizontal();
                         GUILayout.Space(34);
@@ -257,11 +277,12 @@ namespace LGC.TRenameTool.Editor
                 "请完整保留 ID 编号。翻译网页即使更改空格、冒号、括号、空行或添加 Markdown 代码块，工具也会尝试恢复；编号全部丢失时，仅在非空行数量完全一致的情况下按顺序降级解析。",
                 MessageType.Info);
 
-            EditorGUILayout.BeginHorizontal();
-            DrawTextColumn("待翻译原文（只读）", ref exportText, ref exportScroll, true);
+            var textColumnWidth = Mathf.Max(300f, (position.width - 34f) * 0.5f);
+            EditorGUILayout.BeginHorizontal(GUILayout.ExpandWidth(true));
+            DrawTextColumn("待翻译原文（只读）", ref exportText, ref exportScroll, true, textColumnWidth);
             GUILayout.Space(6);
             EditorGUI.BeginChangeCheck();
-            DrawTextColumn("翻译后文本", ref importText, ref importScroll, false);
+            DrawTextColumn("翻译后文本", ref importText, ref importScroll, false, textColumnWidth);
             if (EditorGUI.EndChangeCheck())
             {
                 InvalidateParsedTranslations();
@@ -286,17 +307,17 @@ namespace LGC.TRenameTool.Editor
                 ClearTranslations("已清空译文。");
             }
 
-            if (GUILayout.Button("打开翻译网站 ▾", GUILayout.Height(28)))
+            if (GUILayout.Button("更新预览", GUILayout.Height(28)))
             {
-                ShowTranslationWebsiteMenu();
+                ParseTranslations();
             }
 
             EditorGUILayout.EndHorizontal();
         }
 
-        private static void DrawTextColumn(string title, ref string value, ref Vector2 scroll, bool readOnly)
+        private static void DrawTextColumn(string title, ref string value, ref Vector2 scroll, bool readOnly, float width)
         {
-            using (new EditorGUILayout.VerticalScope(GUILayout.MinWidth(380)))
+            using (new EditorGUILayout.VerticalScope(GUILayout.Width(width), GUILayout.ExpandWidth(false)))
             {
                 EditorGUILayout.LabelField(title, EditorStyles.boldLabel);
                 scroll = EditorGUILayout.BeginScrollView(scroll, EditorStyles.helpBox, GUILayout.Height(190));
@@ -325,15 +346,7 @@ namespace LGC.TRenameTool.Editor
             }
 
             EditorGUILayout.Space(6);
-            EditorGUILayout.BeginHorizontal();
             EditorGUILayout.LabelField("3. 校验译文", EditorStyles.boldLabel);
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button("解析并更新预览", GUILayout.Width(160), GUILayout.Height(26)))
-            {
-                ParseTranslations();
-            }
-
-            EditorGUILayout.EndHorizontal();
 
             if (parseResult.HasAttempted)
             {
@@ -384,7 +397,9 @@ namespace LGC.TRenameTool.Editor
 
             EditorGUILayout.EndScrollView();
             EditorGUILayout.HelpBox(
-                "应用支持 Unity Undo，但不会自动保存场景、Prefab 或资源。MA 菜单 label 为空时，译文会写入 label，不会重命名 GameObject。",
+                renameModularAvatarObjects
+                    ? "应用支持 Unity Undo，但不会自动保存。当前已开启 MA 同步改名：菜单译文会同时写入 label 和 GameObject 名称，可能影响依赖层级路径的动画或工具。"
+                    : "应用支持 Unity Undo，但不会自动保存场景、Prefab 或资源。MA 菜单译文只写入 label，不修改 GameObject 名称。",
                 MessageType.Warning);
         }
 
@@ -393,7 +408,7 @@ namespace LGC.TRenameTool.Editor
             var query = GetActiveEntries().AsEnumerable();
             if (showOnlyChanged)
             {
-                query = query.Where(entry => entry.HasChange);
+                query = query.Where(HasApplicableChange);
             }
 
             if (!string.IsNullOrWhiteSpace(searchText))
@@ -411,23 +426,37 @@ namespace LGC.TRenameTool.Editor
             return query;
         }
 
-        private static void DrawPreviewEntry(TranslationEntry entry)
+        private void DrawPreviewEntry(TranslationEntry entry)
         {
-            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                entry.Selected = EditorGUILayout.Toggle(entry.Selected, GUILayout.Width(20));
-                GUILayout.Label(entry.SourceKind.CompactName(), EditorStyles.miniBoldLabel, GUILayout.Width(72));
-                GUILayout.Label(new GUIContent("（原名）" + entry.Original, entry.Original), GUILayout.Width(180));
-                GUILayout.Label("→", GUILayout.Width(18));
-                GUILayout.Label(
-                    new GUIContent("（译名）" + (entry.Translation ?? string.Empty), entry.Translation ?? string.Empty),
-                    entry.HasChange ? EditorStyles.boldLabel : EditorStyles.label,
-                    GUILayout.Width(180));
-                GUILayout.Space(12);
-                GUILayout.Label(new GUIContent(entry.DisplayPath, entry.DisplayPath), EditorStyles.miniLabel, GUILayout.MinWidth(150));
-                if (GUILayout.Button("定位", GUILayout.Width(50)))
+                using (new EditorGUILayout.HorizontalScope())
                 {
-                    Locate(entry.SourceGroup.Owner);
+                    entry.Selected = EditorGUILayout.Toggle(entry.Selected, GUILayout.Width(20));
+                    GUILayout.Label(entry.SourceKind.CompactName(), EditorStyles.miniBoldLabel, GUILayout.Width(72));
+                    GUILayout.Label(new GUIContent("（原名）" + entry.Original, entry.Original), GUILayout.Width(180));
+                    GUILayout.Label("→", GUILayout.Width(18));
+                    GUILayout.Label(
+                        new GUIContent("（译名）" + (entry.Translation ?? string.Empty), entry.Translation ?? string.Empty),
+                        HasApplicableChange(entry) ? EditorStyles.boldLabel : EditorStyles.label,
+                        GUILayout.Width(180));
+                    GUILayout.Space(12);
+                    GUILayout.Label(new GUIContent(entry.DisplayPath, entry.DisplayPath), EditorStyles.miniLabel, GUILayout.MinWidth(150));
+                    if (GUILayout.Button("定位", GUILayout.Width(50)))
+                    {
+                        Locate(entry.SourceGroup.Owner);
+                    }
+                }
+
+                if (HasObjectNameChange(entry))
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        GUILayout.Space(94);
+                        GUILayout.Label(
+                            "同步物体名称：（原名）" + entry.SnapshotObjectName + " → （译名）" + entry.Translation,
+                            EditorStyles.miniLabel);
+                    }
                 }
             }
         }
@@ -435,7 +464,7 @@ namespace LGC.TRenameTool.Editor
         private void DrawFixedFooter()
         {
             var activeEntries = GetActiveEntries();
-            var changedSelected = activeEntries.Count(entry => entry.Selected && entry.HasChange);
+            var changedSelected = activeEntries.Count(entry => entry.Selected && HasApplicableChange(entry));
             var validation = !parseResult.HasAttempted ? "尚未校验" : parseResult.IsValid ? "校验通过" : "校验失败";
             var warningCount = scanResult.Warnings.Count + parseResult.Warnings.Count;
 
@@ -450,6 +479,11 @@ namespace LGC.TRenameTool.Editor
                         warningCount),
                     parseResult.IsValid ? EditorStyles.boldLabel : EditorStyles.label);
                 GUILayout.FlexibleSpace();
+
+                if (GUILayout.Button("打开翻译网站 ▾", GUILayout.Width(130), GUILayout.Height(30)))
+                {
+                    ShowTranslationWebsiteMenu();
+                }
 
                 using (new EditorGUI.DisabledScope(translationTarget == null && extraMenu == null))
                 {
@@ -515,7 +549,31 @@ namespace LGC.TRenameTool.Editor
         {
             var activeEntries = GetActiveEntries();
             parseResult = TranslationTextCodec.Parse(importText, activeEntries);
+            if (parseResult.IsValid)
+            {
+                var nameOnlyCount = activeEntries.Count(entry => HasObjectNameChange(entry) && !entry.HasChange);
+                if (nameOnlyCount > 0)
+                {
+                    parseResult.Summary += " 另有 " + nameOnlyCount + " 个 MA 物体名称需要同步。";
+                }
+            }
+
             SetStatus(parseResult.Summary, parseResult.IsValid ? MessageType.Info : MessageType.Error);
+        }
+
+        private bool HasApplicableChange(TranslationEntry entry)
+        {
+            return TranslationApplier.HasApplicableChange(entry, renameModularAvatarObjects);
+        }
+
+        private bool HasObjectNameChange(TranslationEntry entry)
+        {
+            return renameModularAvatarObjects &&
+                   entry != null &&
+                   entry.SourceKind == TranslationSourceKind.ModularAvatar &&
+                   entry.RenameTarget != null &&
+                   !string.IsNullOrWhiteSpace(entry.Translation) &&
+                   !string.Equals(entry.RenameTarget.name, entry.Translation.Trim(), StringComparison.Ordinal);
         }
 
         private void PasteTranslationsFromClipboard()
@@ -541,7 +599,7 @@ namespace LGC.TRenameTool.Editor
                 return;
             }
 
-            var result = TranslationApplier.Apply(GetActiveEntries());
+            var result = TranslationApplier.Apply(GetActiveEntries(), renameModularAvatarObjects);
             SetStatus(result.Message, result.Success ? MessageType.Info : MessageType.Error);
             if (result.Success)
             {
@@ -594,6 +652,7 @@ namespace LGC.TRenameTool.Editor
                 TranslationTargetKey = TranslationIdentity.GetObjectKey(translationTarget),
                 ExtraMenuKey = TranslationIdentity.GetObjectKey(extraMenu),
                 IncludeInactive = includeInactive,
+                RenameModularAvatarObjects = renameModularAvatarObjects,
                 ShowOnlyChanged = showOnlyChanged,
                 SearchText = searchText,
                 ImportText = importText
@@ -635,6 +694,7 @@ namespace LGC.TRenameTool.Editor
                 translationTarget = TranslationIdentity.ResolveObject(session.TranslationTargetKey) as GameObject;
                 extraMenu = TranslationIdentity.ResolveObject(session.ExtraMenuKey);
                 includeInactive = session.IncludeInactive;
+                renameModularAvatarObjects = session.RenameModularAvatarObjects;
                 showOnlyChanged = session.ShowOnlyChanged;
                 searchText = session.SearchText ?? string.Empty;
                 Scan();

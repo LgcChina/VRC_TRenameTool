@@ -1,6 +1,6 @@
-// LGC TRenameTool 2.2.0
+// LGC TRenameTool 2.3.1
 // 菜单扫描、稳定编号文本编解码与安全写回核心。
-// 更新日期：2026-11-26
+// 更新日期：2026-11-27
 
 #if UNITY_EDITOR
 using System;
@@ -89,6 +89,8 @@ namespace LGC.TRenameTool.Editor
         public int PathSegmentIndex = -1;
         public bool Selected = true;
         public TranslationSourceGroup SourceGroup;
+        public GameObject RenameTarget;
+        public string SnapshotObjectName;
 
         public bool IsFullPath
         {
@@ -143,6 +145,7 @@ namespace LGC.TRenameTool.Editor
         public string PropertyPath;
         public string OriginalValue;
         public string AppliedValue;
+        public bool IsObjectName;
     }
 
     internal static class TranslationTextCodec
@@ -426,7 +429,7 @@ namespace LGC.TRenameTool.Editor
                 }
                 else
                 {
-                    context.Result.Warnings.Add("“额外原生菜单”不是 VRCExpressionsMenu，已忽略：" + extraMenu.name);
+                    context.Result.Warnings.Add("“原生菜单翻译”不是 VRCExpressionsMenu，已忽略：" + extraMenu.name);
                 }
             }
 
@@ -480,7 +483,7 @@ namespace LGC.TRenameTool.Editor
             if (label != null && label.propertyType == SerializedPropertyType.String)
             {
                 var displayName = string.IsNullOrEmpty(label.stringValue) ? component.gameObject.name : label.stringValue;
-                AddStringEntry(
+                var entry = AddStringEntry(
                     context,
                     component,
                     label.propertyPath,
@@ -488,6 +491,11 @@ namespace LGC.TRenameTool.Editor
                     label.stringValue,
                     TranslationSourceKind.ModularAvatar,
                     GetHierarchyPath(context.Root, component.gameObject) + " / 菜单名");
+                if (entry != null)
+                {
+                    entry.RenameTarget = component.gameObject;
+                    entry.SnapshotObjectName = component.gameObject.name;
+                }
             }
 
             var control = serialized.FindProperty("Control");
@@ -696,25 +704,27 @@ namespace LGC.TRenameTool.Editor
             }
         }
 
-        private static void AddStringEntry(Context context, Object target, string propertyPath, string displayValue, string rawValue, TranslationSourceKind kind, string displayPath)
+        private static TranslationEntry AddStringEntry(Context context, Object target, string propertyPath, string displayValue, string rawValue, TranslationSourceKind kind, string displayPath)
         {
             if (!string.IsNullOrWhiteSpace(displayValue))
             {
-                AddEntry(context, target, propertyPath, displayValue, rawValue, kind, displayPath, -1);
+                return AddEntry(context, target, propertyPath, displayValue, rawValue, kind, displayPath, -1);
             }
+
+            return null;
         }
 
-        private static void AddEntry(Context context, Object target, string propertyPath, string original, string rawValue, TranslationSourceKind kind, string displayPath, int pathSegmentIndex)
+        private static TranslationEntry AddEntry(Context context, Object target, string propertyPath, string original, string rawValue, TranslationSourceKind kind, string displayPath, int pathSegmentIndex)
         {
             if (target == null || string.IsNullOrEmpty(propertyPath))
             {
-                return;
+                return null;
             }
 
             var key = target.GetInstanceID() + "|" + propertyPath + "|" + pathSegmentIndex;
             if (!context.EntryKeys.Add(key))
             {
-                return;
+                return null;
             }
 
             var sourceGroup = GetOrCreateSourceGroup(context, target);
@@ -731,6 +741,7 @@ namespace LGC.TRenameTool.Editor
             };
             context.Result.Entries.Add(entry);
             sourceGroup.Entries.Add(entry);
+            return entry;
         }
 
         private static TranslationSourceGroup GetOrCreateSourceGroup(Context context, Object target)
@@ -858,6 +869,13 @@ namespace LGC.TRenameTool.Editor
             public readonly List<TranslationEntry> Entries = new List<TranslationEntry>();
         }
 
+        private sealed class ObjectNameChange
+        {
+            public GameObject Target;
+            public string SnapshotName;
+            public string AppliedName;
+        }
+
         private static readonly List<TranslationRestoreRecord> LastRestoreRecords = new List<TranslationRestoreRecord>();
 
         public static bool HasLastApplication
@@ -865,9 +883,11 @@ namespace LGC.TRenameTool.Editor
             get { return LastRestoreRecords.Count > 0; }
         }
 
-        public static ApplyResult Apply(IList<TranslationEntry> entries)
+        public static ApplyResult Apply(IList<TranslationEntry> entries, bool renameModularAvatarObjects)
         {
-            var selected = entries.Where(entry => entry.Selected && entry.HasChange).ToList();
+            var selected = entries
+                .Where(entry => entry.Selected && HasApplicableChange(entry, renameModularAvatarObjects))
+                .ToList();
             if (selected.Count == 0)
             {
                 return Failure("没有选中任何有变化的条目。");
@@ -879,7 +899,9 @@ namespace LGC.TRenameTool.Editor
             }
 
             var changes = new List<PropertyChange>();
-            foreach (var group in selected.GroupBy(entry => entry.Target.GetInstanceID() + "|" + entry.PropertyPath))
+            foreach (var group in selected
+                .Where(entry => entry.HasChange)
+                .GroupBy(entry => entry.Target.GetInstanceID() + "|" + entry.PropertyPath))
             {
                 var first = group.First();
                 var change = new PropertyChange
@@ -892,13 +914,37 @@ namespace LGC.TRenameTool.Editor
                 changes.Add(change);
             }
 
+            var nameChanges = new List<ObjectNameChange>();
+            if (renameModularAvatarObjects)
+            {
+                foreach (var group in selected
+                    .Where(entry => entry.SourceKind == TranslationSourceKind.ModularAvatar && entry.RenameTarget != null)
+                    .GroupBy(entry => entry.RenameTarget))
+                {
+                    var translations = group.Select(entry => entry.Translation.Trim()).Distinct().ToList();
+                    if (translations.Count == 1 && !string.Equals(group.Key.name, translations[0], StringComparison.Ordinal))
+                    {
+                        nameChanges.Add(new ObjectNameChange
+                        {
+                            Target = group.Key,
+                            SnapshotName = group.First().SnapshotObjectName,
+                            AppliedName = translations[0]
+                        });
+                    }
+                }
+            }
+
             var errors = ValidateChanges(changes);
+            errors.AddRange(ValidateNameChanges(selected, nameChanges, renameModularAvatarObjects));
             if (errors.Count > 0)
             {
                 return Failure("应用已取消，未修改任何内容：\n" + string.Join("\n", errors.ToArray()));
             }
 
-            var targets = changes.Select(change => change.Target).Distinct().ToArray();
+            var targets = changes.Select(change => change.Target)
+                .Concat(nameChanges.Select(change => (Object)change.Target))
+                .Distinct()
+                .ToArray();
             Undo.RecordObjects(targets, "翻译 VRChat 菜单");
 
             var changedEntries = 0;
@@ -942,14 +988,51 @@ namespace LGC.TRenameTool.Editor
                 }
             }
 
+            foreach (var nameChange in nameChanges)
+            {
+                restoreRecords.Add(new TranslationRestoreRecord
+                {
+                    Target = nameChange.Target,
+                    OriginalValue = nameChange.Target.name,
+                    AppliedValue = nameChange.AppliedName,
+                    IsObjectName = true
+                });
+                nameChange.Target.name = nameChange.AppliedName;
+                EditorUtility.SetDirty(nameChange.Target);
+                if (PrefabUtility.IsPartOfPrefabInstance(nameChange.Target))
+                {
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(nameChange.Target);
+                }
+
+                if (nameChange.Target.scene.IsValid())
+                {
+                    EditorSceneManager.MarkSceneDirty(nameChange.Target.scene);
+                }
+            }
+
             Undo.FlushUndoRecordObjects();
             LastRestoreRecords.Clear();
             LastRestoreRecords.AddRange(restoreRecords);
             return new ApplyResult
             {
                 Success = true,
-                Message = "已应用 " + changedEntries + " 条菜单文字修改。"
+                Message = "已应用 " + changedEntries + " 条菜单文字修改" +
+                          (nameChanges.Count > 0 ? "，并同步修改 " + nameChanges.Count + " 个 MA 物体名称。" : "。")
             };
+        }
+
+        public static bool HasApplicableChange(TranslationEntry entry, bool renameModularAvatarObjects)
+        {
+            if (entry == null || string.IsNullOrWhiteSpace(entry.Translation))
+            {
+                return false;
+            }
+
+            return entry.HasChange ||
+                   (renameModularAvatarObjects &&
+                    entry.SourceKind == TranslationSourceKind.ModularAvatar &&
+                    entry.RenameTarget != null &&
+                    !string.Equals(entry.RenameTarget.name, entry.Translation.Trim(), StringComparison.Ordinal));
         }
 
         public static ApplyResult RestoreLastApplication()
@@ -965,6 +1048,16 @@ namespace LGC.TRenameTool.Editor
                 if (record.Target == null)
                 {
                     errors.Add("撤回目标已被删除，请重新扫描。");
+                    continue;
+                }
+
+                if (record.IsObjectName)
+                {
+                    if (!string.Equals(record.Target.name, record.AppliedValue, StringComparison.Ordinal))
+                    {
+                        errors.Add("物体名称在应用后已被其他操作修改，请重新扫描后再决定是否撤回：" + record.Target.name);
+                    }
+
                     continue;
                 }
 
@@ -989,7 +1082,7 @@ namespace LGC.TRenameTool.Editor
 
             var targets = LastRestoreRecords.Select(record => record.Target).Distinct().ToArray();
             Undo.RecordObjects(targets, "撤回 VRChat 菜单翻译");
-            foreach (var targetGroup in LastRestoreRecords.GroupBy(record => record.Target))
+            foreach (var targetGroup in LastRestoreRecords.Where(record => !record.IsObjectName).GroupBy(record => record.Target))
             {
                 var serialized = new SerializedObject(targetGroup.Key);
                 serialized.Update();
@@ -1015,13 +1108,34 @@ namespace LGC.TRenameTool.Editor
                 }
             }
 
+            foreach (var record in LastRestoreRecords.Where(record => record.IsObjectName))
+            {
+                var gameObject = record.Target as GameObject;
+                if (gameObject == null)
+                {
+                    continue;
+                }
+
+                gameObject.name = record.OriginalValue;
+                EditorUtility.SetDirty(gameObject);
+                if (PrefabUtility.IsPartOfPrefabInstance(gameObject))
+                {
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(gameObject);
+                }
+
+                if (gameObject.scene.IsValid())
+                {
+                    EditorSceneManager.MarkSceneDirty(gameObject.scene);
+                }
+            }
+
             Undo.FlushUndoRecordObjects();
             var restoredEntries = LastRestoreRecords.Count;
             LastRestoreRecords.Clear();
             return new ApplyResult
             {
                 Success = true,
-                Message = "已撤回上次应用的 " + restoredEntries + " 个属性修改。"
+                Message = "已撤回上次应用的 " + restoredEntries + " 项修改。"
             };
         }
 
@@ -1066,6 +1180,51 @@ namespace LGC.TRenameTool.Editor
             }
 
             return errors.Distinct().ToList();
+        }
+
+        private static IEnumerable<string> ValidateNameChanges(
+            IEnumerable<TranslationEntry> selected,
+            IEnumerable<ObjectNameChange> nameChanges,
+            bool renameModularAvatarObjects)
+        {
+            if (!renameModularAvatarObjects)
+            {
+                return Enumerable.Empty<string>();
+            }
+
+            var errors = new List<string>();
+            foreach (var group in selected
+                .Where(entry => entry.SourceKind == TranslationSourceKind.ModularAvatar && entry.RenameTarget != null)
+                .GroupBy(entry => entry.RenameTarget))
+            {
+                var translations = group.Select(entry => entry.Translation.Trim()).Distinct().ToList();
+                var snapshotNames = group.Select(entry => entry.SnapshotObjectName).Distinct().ToList();
+                if (translations.Count > 1)
+                {
+                    errors.Add("同一个 MA 物体对应了多个不同译名，无法同步修改物体名称：" + group.Key.name);
+                }
+
+                if (snapshotNames.Count != 1 || !string.Equals(group.Key.name, snapshotNames[0], StringComparison.Ordinal))
+                {
+                    errors.Add("扫描后 MA 物体名称已变化，请重新扫描：" + group.Key.name);
+                }
+            }
+
+            foreach (var change in nameChanges)
+            {
+                if (change.Target == null)
+                {
+                    errors.Add("需要改名的 MA 物体已被删除，请重新扫描。");
+                    continue;
+                }
+
+                if (string.IsNullOrWhiteSpace(change.AppliedName))
+                {
+                    errors.Add("MA 物体名称不能为空：" + change.Target.name);
+                }
+            }
+
+            return errors.Distinct();
         }
 
         private static string BuildNewValue(PropertyChange change)
