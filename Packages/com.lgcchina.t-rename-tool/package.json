@@ -1,7 +1,7 @@
 {
   "name": "com.lgcchina.t-rename-tool",
   "displayName": "LGC_TRenameTool_模型菜单翻译",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "unity": "2022.3",
   "description": "提取并回填 VRChat 原生、Modular Avatar 与 VRCFury 菜单文字，用于配合外部翻译网页进行人工翻译。",
   "author": {

@@ -1,4 +1,4 @@
-// LGC TRenameTool 2.1.1
+// LGC TRenameTool 2.2.0
 // 菜单扫描、稳定编号文本编解码与安全写回核心。
 // 更新日期：2026-11-26
 
@@ -60,6 +60,7 @@ namespace LGC.TRenameTool.Editor
     {
         public Object Owner;
         public string DisplayPath;
+        public string StableKey;
         public bool Enabled = true;
         public bool Expanded;
         public readonly List<TranslationEntry> Entries = new List<TranslationEntry>();
@@ -88,6 +89,11 @@ namespace LGC.TRenameTool.Editor
         public int PathSegmentIndex = -1;
         public bool Selected = true;
         public TranslationSourceGroup SourceGroup;
+
+        public bool IsFullPath
+        {
+            get { return PathSegmentIndex == -2; }
+        }
 
         public bool IsPathSegment
         {
@@ -129,6 +135,14 @@ namespace LGC.TRenameTool.Editor
     {
         public bool Success;
         public string Message;
+    }
+
+    internal sealed class TranslationRestoreRecord
+    {
+        public Object Target;
+        public string PropertyPath;
+        public string OriginalValue;
+        public string AppliedValue;
     }
 
     internal static class TranslationTextCodec
@@ -263,6 +277,10 @@ namespace LGC.TRenameTool.Editor
                 {
                     errors.Add(entry.Id + " 是菜单路径片段，译文不能包含 / 或 \\。请只填写当前层级名称。");
                 }
+                else if (entry.IsFullPath && !IsValidFullPath(value))
+                {
+                    errors.Add(entry.Id + " 是完整菜单路径，译文不能以 / 开头或结尾，也不能包含连续的 /。");
+                }
             }
 
             if (errors.Count > 0)
@@ -277,6 +295,16 @@ namespace LGC.TRenameTool.Editor
             var changed = entries.Count(entry => entry.HasChange);
             result.Summary = string.Format("译文校验通过：{0}/{1} 条将发生变化。", changed, entries.Count);
             return result;
+        }
+
+        private static bool IsValidFullPath(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value) || value.StartsWith("/", StringComparison.Ordinal) || value.EndsWith("/", StringComparison.Ordinal) || value.Contains("//"))
+            {
+                return false;
+            }
+
+            return value.Split(new[] { '/' }, StringSplitOptions.None).All(segment => !string.IsNullOrWhiteSpace(segment));
         }
 
         private static string Normalize(string text)
@@ -648,26 +676,16 @@ namespace LGC.TRenameTool.Editor
                 return;
             }
 
-            var raw = property.stringValue;
-            var segments = raw.Split('/');
-            for (var index = 0; index < segments.Length; index++)
-            {
-                var segment = segments[index].Trim();
-                if (string.IsNullOrEmpty(segment))
-                {
-                    continue;
-                }
-
-                AddEntry(
-                    context,
-                    target,
-                    property.propertyPath,
-                    segment,
-                    raw,
-                    kind,
-                    displayPath + " / 路径层级 " + (index + 1),
-                    index);
-            }
+            var raw = property.stringValue.Trim();
+            AddEntry(
+                context,
+                target,
+                property.propertyPath,
+                raw,
+                raw,
+                kind,
+                displayPath + " / 完整路径",
+                -2);
         }
 
         private static void ScanReferencedMenuProperty(Context context, SerializedProperty property, string sourcePath)
@@ -746,7 +764,8 @@ namespace LGC.TRenameTool.Editor
             group = new TranslationSourceGroup
             {
                 Owner = owner,
-                DisplayPath = displayPath
+                DisplayPath = displayPath,
+                StableKey = TranslationIdentity.GetObjectKey(owner)
             };
             context.Groups.Add(key, group);
             context.Result.Groups.Add(group);
@@ -786,6 +805,49 @@ namespace LGC.TRenameTool.Editor
         }
     }
 
+    internal static class TranslationIdentity
+    {
+        public static string GetObjectKey(Object target)
+        {
+            if (target == null)
+            {
+                return string.Empty;
+            }
+
+            var globalObjectId = GlobalObjectId.GetGlobalObjectIdSlow(target);
+            if (globalObjectId.identifierType != 0)
+            {
+                return globalObjectId.ToString();
+            }
+
+            var assetPath = AssetDatabase.GetAssetPath(target);
+            return string.IsNullOrEmpty(assetPath) ? target.name : assetPath + "|" + target.name;
+        }
+
+        public static string GetEntryKey(TranslationEntry entry)
+        {
+            return GetObjectKey(entry.Target) + "|" + entry.PropertyPath + "|" + entry.PathSegmentIndex;
+        }
+
+        public static Object ResolveObject(string key)
+        {
+            if (string.IsNullOrEmpty(key))
+            {
+                return null;
+            }
+
+            GlobalObjectId globalObjectId;
+            if (GlobalObjectId.TryParse(key, out globalObjectId))
+            {
+                return GlobalObjectId.GlobalObjectIdentifierToObjectSlow(globalObjectId);
+            }
+
+            var split = key.IndexOf('|');
+            var assetPath = split >= 0 ? key.Substring(0, split) : key;
+            return AssetDatabase.LoadAssetAtPath<Object>(assetPath);
+        }
+    }
+
     internal static class TranslationApplier
     {
         private sealed class PropertyChange
@@ -794,6 +856,13 @@ namespace LGC.TRenameTool.Editor
             public string PropertyPath;
             public string SnapshotRawValue;
             public readonly List<TranslationEntry> Entries = new List<TranslationEntry>();
+        }
+
+        private static readonly List<TranslationRestoreRecord> LastRestoreRecords = new List<TranslationRestoreRecord>();
+
+        public static bool HasLastApplication
+        {
+            get { return LastRestoreRecords.Count > 0; }
         }
 
         public static ApplyResult Apply(IList<TranslationEntry> entries)
@@ -833,6 +902,7 @@ namespace LGC.TRenameTool.Editor
             Undo.RecordObjects(targets, "翻译 VRChat 菜单");
 
             var changedEntries = 0;
+            var restoreRecords = new List<TranslationRestoreRecord>();
             foreach (var targetGroup in changes.GroupBy(change => change.Target))
             {
                 var target = targetGroup.Key;
@@ -841,7 +911,16 @@ namespace LGC.TRenameTool.Editor
                 foreach (var change in targetGroup)
                 {
                     var property = serialized.FindProperty(change.PropertyPath);
-                    property.stringValue = BuildNewValue(change);
+                    var originalValue = property.stringValue;
+                    var appliedValue = BuildNewValue(change);
+                    restoreRecords.Add(new TranslationRestoreRecord
+                    {
+                        Target = target,
+                        PropertyPath = change.PropertyPath,
+                        OriginalValue = originalValue,
+                        AppliedValue = appliedValue
+                    });
+                    property.stringValue = appliedValue;
                     changedEntries += change.Entries.Count;
                 }
 
@@ -864,10 +943,85 @@ namespace LGC.TRenameTool.Editor
             }
 
             Undo.FlushUndoRecordObjects();
+            LastRestoreRecords.Clear();
+            LastRestoreRecords.AddRange(restoreRecords);
             return new ApplyResult
             {
                 Success = true,
                 Message = "已应用 " + changedEntries + " 条菜单文字修改。"
+            };
+        }
+
+        public static ApplyResult RestoreLastApplication()
+        {
+            if (LastRestoreRecords.Count == 0)
+            {
+                return Failure("没有可撤回的上次应用。");
+            }
+
+            var errors = new List<string>();
+            foreach (var record in LastRestoreRecords)
+            {
+                if (record.Target == null)
+                {
+                    errors.Add("撤回目标已被删除，请重新扫描。");
+                    continue;
+                }
+
+                var serialized = new SerializedObject(record.Target);
+                var property = serialized.FindProperty(record.PropertyPath);
+                if (property == null || property.propertyType != SerializedPropertyType.String)
+                {
+                    errors.Add("撤回属性已不存在：" + record.Target.name + " / " + record.PropertyPath);
+                    continue;
+                }
+
+                if (!string.Equals(property.stringValue, record.AppliedValue, StringComparison.Ordinal))
+                {
+                    errors.Add("目标内容在应用后已被其他操作修改，请重新扫描后再决定是否撤回：" + record.Target.name + " / " + record.PropertyPath);
+                }
+            }
+
+            if (errors.Count > 0)
+            {
+                return Failure("撤回已取消，未修改任何内容：\n" + string.Join("\n", errors.Distinct().ToArray()));
+            }
+
+            var targets = LastRestoreRecords.Select(record => record.Target).Distinct().ToArray();
+            Undo.RecordObjects(targets, "撤回 VRChat 菜单翻译");
+            foreach (var targetGroup in LastRestoreRecords.GroupBy(record => record.Target))
+            {
+                var serialized = new SerializedObject(targetGroup.Key);
+                serialized.Update();
+                foreach (var record in targetGroup)
+                {
+                    serialized.FindProperty(record.PropertyPath).stringValue = record.OriginalValue;
+                }
+
+                serialized.ApplyModifiedProperties();
+                EditorUtility.SetDirty(targetGroup.Key);
+                var component = targetGroup.Key as Component;
+                if (component != null)
+                {
+                    if (PrefabUtility.IsPartOfPrefabInstance(component))
+                    {
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(component);
+                    }
+
+                    if (component.gameObject.scene.IsValid())
+                    {
+                        EditorSceneManager.MarkSceneDirty(component.gameObject.scene);
+                    }
+                }
+            }
+
+            Undo.FlushUndoRecordObjects();
+            var restoredEntries = LastRestoreRecords.Count;
+            LastRestoreRecords.Clear();
+            return new ApplyResult
+            {
+                Success = true,
+                Message = "已撤回上次应用的 " + restoredEntries + " 个属性修改。"
             };
         }
 

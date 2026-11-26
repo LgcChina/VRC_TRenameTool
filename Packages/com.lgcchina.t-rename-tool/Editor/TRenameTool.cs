@@ -1,4 +1,4 @@
-// LGC TRenameTool 2.1.1
+// LGC TRenameTool 2.2.0
 // VRChat 菜单文本提取、来源筛选、人工翻译回填与安全应用窗口。
 // 更新日期：2026-11-26
 
@@ -14,9 +14,10 @@ namespace LGC.TRenameTool.Editor
     public sealed class TRenameTool : EditorWindow
     {
         internal const string ToolName = "LGC_TRenameTool_模型菜单翻译";
-        internal const string Version = "2.1.1";
+        internal const string Version = "2.2.0";
         internal const string UpdateDate = "2026-11-26";
         private const string ImportTextControlName = "LGC_TRenameTool_ImportText";
+        private const string PlayModeSessionKey = "LGC_TRenameTool_PlayModeSession_2";
 
         private GameObject translationTarget;
         private UnityEngine.Object extraMenu;
@@ -33,6 +34,19 @@ namespace LGC.TRenameTool.Editor
         private Vector2 previewScroll;
         private ScanResult scanResult = new ScanResult();
         private TranslationParseResult parseResult = new TranslationParseResult();
+
+        [Serializable]
+        private sealed class PlayModeSession
+        {
+            public string TranslationTargetKey;
+            public string ExtraMenuKey;
+            public bool IncludeInactive;
+            public bool ShowOnlyChanged;
+            public string SearchText;
+            public string ImportText;
+            public List<string> EnabledGroupKeys = new List<string>();
+            public List<string> SelectedEntryKeys = new List<string>();
+        }
 
         [MenuItem("LGC/LGC_TRenameTool_模型菜单翻译")]
         public static void ShowWindow()
@@ -52,6 +66,18 @@ namespace LGC.TRenameTool.Editor
         {
             minSize = new Vector2(920, 640);
             titleContent = new GUIContent(ToolName + " " + Version);
+            EditorApplication.playModeStateChanged -= HandlePlayModeStateChanged;
+            EditorApplication.playModeStateChanged += HandlePlayModeStateChanged;
+            if (SessionState.GetBool(PlayModeSessionKey + ".Pending", false))
+            {
+                EditorApplication.delayCall -= RestorePlayModeSession;
+                EditorApplication.delayCall += RestorePlayModeSession;
+            }
+        }
+
+        private void OnDisable()
+        {
+            EditorApplication.playModeStateChanged -= HandlePlayModeStateChanged;
         }
 
         private void OnGUI()
@@ -433,7 +459,15 @@ namespace LGC.TRenameTool.Editor
                     }
                 }
 
-                using (new EditorGUI.DisabledScope(!parseResult.IsValid || changedSelected == 0))
+                using (new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode || !TranslationApplier.HasLastApplication))
+                {
+                    if (GUILayout.Button("撤回上次应用", GUILayout.Width(130), GUILayout.Height(30)))
+                    {
+                        RestoreLastApplication();
+                    }
+                }
+
+                using (new EditorGUI.DisabledScope(EditorApplication.isPlayingOrWillChangePlaymode || !parseResult.IsValid || changedSelected == 0))
                 {
                     var previousColor = GUI.backgroundColor;
                     GUI.backgroundColor = new Color(0.55f, 0.9f, 0.65f);
@@ -495,6 +529,12 @@ namespace LGC.TRenameTool.Editor
 
         private void ApplyTranslations()
         {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                SetStatus("运行模式中不能应用翻译，请退出运行模式后再操作。", MessageType.Warning);
+                return;
+            }
+
             if (!parseResult.IsValid)
             {
                 SetStatus("译文校验未通过，未进行任何修改。", MessageType.Error);
@@ -507,6 +547,123 @@ namespace LGC.TRenameTool.Editor
             {
                 Scan();
                 statusText = result.Message + " 已重新扫描，请在 Unity 中检查结果；工具未自动保存。";
+            }
+        }
+
+        private void RestoreLastApplication()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode)
+            {
+                SetStatus("运行模式中不能撤回翻译，请退出运行模式后再操作。", MessageType.Warning);
+                return;
+            }
+
+            var result = TranslationApplier.RestoreLastApplication();
+            SetStatus(result.Message, result.Success ? MessageType.Info : MessageType.Error);
+            if (result.Success)
+            {
+                Scan();
+                statusText = result.Message + " 已重新扫描；工具未自动保存。";
+            }
+        }
+
+        private void HandlePlayModeStateChanged(PlayModeStateChange state)
+        {
+            if (state == PlayModeStateChange.ExitingEditMode)
+            {
+                SavePlayModeSession();
+            }
+            else if (state == PlayModeStateChange.EnteredEditMode && SessionState.GetBool(PlayModeSessionKey + ".Pending", false))
+            {
+                EditorApplication.delayCall -= RestorePlayModeSession;
+                EditorApplication.delayCall += RestorePlayModeSession;
+            }
+        }
+
+        private void SavePlayModeSession()
+        {
+            if (scanResult.Entries.Count == 0)
+            {
+                SessionState.EraseString(PlayModeSessionKey);
+                SessionState.SetBool(PlayModeSessionKey + ".Pending", false);
+                return;
+            }
+
+            var session = new PlayModeSession
+            {
+                TranslationTargetKey = TranslationIdentity.GetObjectKey(translationTarget),
+                ExtraMenuKey = TranslationIdentity.GetObjectKey(extraMenu),
+                IncludeInactive = includeInactive,
+                ShowOnlyChanged = showOnlyChanged,
+                SearchText = searchText,
+                ImportText = importText
+            };
+
+            foreach (var group in scanResult.Groups.Where(group => group.Enabled))
+            {
+                session.EnabledGroupKeys.Add(group.StableKey);
+            }
+
+            foreach (var entry in scanResult.Entries.Where(entry => entry.Selected))
+            {
+                session.SelectedEntryKeys.Add(TranslationIdentity.GetEntryKey(entry));
+            }
+
+            SessionState.SetString(PlayModeSessionKey, JsonUtility.ToJson(session));
+            SessionState.SetBool(PlayModeSessionKey + ".Pending", true);
+        }
+
+        private void RestorePlayModeSession()
+        {
+            EditorApplication.delayCall -= RestorePlayModeSession;
+            if (!SessionState.GetBool(PlayModeSessionKey + ".Pending", false))
+            {
+                return;
+            }
+
+            var json = SessionState.GetString(PlayModeSessionKey, string.Empty);
+            SessionState.EraseString(PlayModeSessionKey);
+            SessionState.SetBool(PlayModeSessionKey + ".Pending", false);
+            if (string.IsNullOrEmpty(json))
+            {
+                return;
+            }
+
+            try
+            {
+                var session = JsonUtility.FromJson<PlayModeSession>(json);
+                translationTarget = TranslationIdentity.ResolveObject(session.TranslationTargetKey) as GameObject;
+                extraMenu = TranslationIdentity.ResolveObject(session.ExtraMenuKey);
+                includeInactive = session.IncludeInactive;
+                showOnlyChanged = session.ShowOnlyChanged;
+                searchText = session.SearchText ?? string.Empty;
+                Scan();
+
+                var enabledGroups = new HashSet<string>(session.EnabledGroupKeys ?? new List<string>());
+                foreach (var group in scanResult.Groups)
+                {
+                    group.Enabled = enabledGroups.Contains(group.StableKey);
+                }
+
+                RebuildExportText();
+                importText = session.ImportText ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(importText))
+                {
+                    ParseTranslations();
+                }
+
+                var selectedEntries = new HashSet<string>(session.SelectedEntryKeys ?? new List<string>());
+                foreach (var entry in scanResult.Entries)
+                {
+                    entry.Selected = selectedEntries.Contains(TranslationIdentity.GetEntryKey(entry));
+                }
+
+                SetStatus("已从运行模式前的会话恢复翻译内容；请检查扫描结果后再应用。", MessageType.Info);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogException(exception);
+                SetStatus("运行模式退出后恢复翻译会话失败，请重新选择待翻译物体并扫描。", MessageType.Warning);
             }
         }
 
